@@ -1,0 +1,14 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# Virtual env
+.venv/
+venv/
+
+# 작업/출력 (repo에 포함하지 않음)
+*_work/
+*_output/
+logs/
