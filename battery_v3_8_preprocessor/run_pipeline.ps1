@@ -40,18 +40,39 @@
       pwsh -File .\run_pipeline.ps1 -Stage execute -RawRoot "..." -WorkDir "..." -Output "..."
 #>
 param(
-    [ValidateSet("dry-run", "approve", "execute")]
+    [ValidateSet("dry-run", "approve", "execute", "upload")]
     [Parameter(Mandatory = $true)] [string]$Stage,
     [string]$RawRoot,
     [string]$WorkDir,
     [string]$Output,
+    [string]$Remote,
     [string]$ApprovedBy,
     [int]$Seed = 42,
     [int]$Jobs = 8,
-    [switch]$KeepDisplay
+    [switch]$KeepDisplay,
+    [switch]$Detached
 )
 
 $ErrorActionPreference = "Stop"
+
+# Long stages must not be children of the calling session: an agent session
+# reaps its children when a tool call ends, which killed two dry-runs after
+# roughly 35 minutes each with no log to explain it. Relaunch detached instead.
+# Arguments go through as an array because a space in the path truncated
+# -File once already.
+if ($Detached) {
+    $forward = @("-ExecutionPolicy", "Bypass", "-NonInteractive", "-File", $PSCommandPath, "-Stage", $Stage)
+    foreach ($name in @("RawRoot", "WorkDir", "Output", "Remote", "ApprovedBy")) {
+        $value = Get-Variable -Name $name -ValueOnly -ErrorAction SilentlyContinue
+        if ($value) { $forward += @("-$name", $value) }
+    }
+    $forward += @("-Seed", "$Seed", "-Jobs", "$Jobs")
+    if ($KeepDisplay) { $forward += "-KeepDisplay" }
+    $child = Start-Process -FilePath (Get-Process -Id $PID).Path -ArgumentList $forward -WindowStyle Hidden -PassThru
+    Write-Host "$Stage 를 분리 실행으로 시작했다. PID $($child.Id)" -ForegroundColor Cyan
+    Write-Host "진행 상황: $WorkDir\pipeline.status" -ForegroundColor Cyan
+    exit 0
+}
 
 if ($PSVersionTable.PSVersion.Major -lt 7) {
     Write-Error "pwsh(PowerShell 7) 필요. Windows PowerShell 5.1은 BOM 없는 UTF-8 한글을 깨뜨린다."
@@ -97,6 +118,58 @@ switch ($Stage) {
         if (-not $RawRoot -or -not $Output) { Write-Error "-RawRoot 와 -Output 필요"; exit 2 }
         $cliArgs = @("execute", "--raw-root", $RawRoot, "--work-dir", $WorkDir, "--output", $Output, "--seed", "$Seed", "--jobs", "$Jobs")
     }
+    "upload" {
+        if (-not $Output -or -not $Remote) { Write-Error "-Output 과 -Remote 필요"; exit 2 }
+        $cliArgs = $null
+    }
+}
+
+# 산출물 zip은 CT trainval, CT test, EXT trainval, EXT test 순서로 하나씩 완성되며
+# 각 파일은 완전히 닫힌 뒤 다음이 시작된다. 따라서 완성된 것부터 올려도 된다.
+$ZIP_ORDER = @(
+    "battery_CT_v3_trainval.zip",
+    "battery_CT_v3_test.zip",
+    "battery_EXT_v3_trainval.zip",
+    "battery_EXT_v3_test.zip"
+)
+
+function Test-ZipClosed([string]$path) {
+    # 중앙 디렉터리가 기록됐는지만 확인한다. testzip 은 전체를 압축 해제하므로
+    # 수십 GB 파일에는 쓰지 않는다. 19.7GB 파일에서 이 방식은 2.5초면 끝난다.
+    & $python -c "import sys,zipfile
+try:
+    with zipfile.ZipFile(sys.argv[1]) as archive: archive.infolist()
+except Exception: sys.exit(1)
+sys.exit(0)" $path 2>$null | Out-Null
+    return ($LASTEXITCODE -eq 0)
+}
+
+function Invoke-Upload {
+    foreach ($name in $ZIP_ORDER) {
+        $path = Join-Path $Output $name
+        if (-not (Test-Path $path)) {
+            "[upload] 없음, 건너뜀: $name" | Tee-Object -FilePath $log -Append
+            continue
+        }
+        $previous = -1L
+        while ($true) {
+            $size = (Get-Item $path).Length
+            if ($size -gt 0 -and $size -eq $previous -and (Test-ZipClosed $path)) { break }
+            $previous = $size
+            Start-Sleep -Seconds 20
+        }
+        $gb = [math]::Round((Get-Item $path).Length / 1GB, 2)
+        "[upload] 시작: $name ($gb GB)" | Tee-Object -FilePath $log -Append
+        & rclone copyto $path "$Remote/$name" --drive-chunk-size 128M --transfers 1 `
+            --retries 5 --low-level-retries 20 --stats 30s --stats-one-line `
+            --log-level INFO --log-file $log
+        if ($LASTEXITCODE -ne 0) { return $LASTEXITCODE }
+        "[upload] 완료: $name" | Tee-Object -FilePath $log -Append
+    }
+    "[upload] 부가 산출물 (zip 제외)" | Tee-Object -FilePath $log -Append
+    & rclone copy $Output $Remote --exclude "*.zip" --transfers 8 --retries 5 `
+        --stats 30s --stats-one-line --log-level INFO --log-file $log
+    return $LASTEXITCODE
 }
 
 Add-Type -Namespace Win32 -Name PipelinePower -MemberDefinition @'
@@ -116,8 +189,13 @@ $start = Get-Date
 $exit = 1
 try {
     [Win32.PipelinePower]::SetThreadExecutionState($flags) | Out-Null
-    & $python -X utf8 -u -m "$module.cli" @cliArgs *>&1 | Tee-Object -FilePath $log -Append
-    $exit = $LASTEXITCODE
+    if ($Stage -eq "upload") {
+        $exit = Invoke-Upload
+    }
+    else {
+        & $python -X utf8 -u -m "$module.cli" @cliArgs *>&1 | Tee-Object -FilePath $log -Append
+        $exit = $LASTEXITCODE
+    }
 }
 catch {
     $_ | Out-String | Tee-Object -FilePath $log -Append

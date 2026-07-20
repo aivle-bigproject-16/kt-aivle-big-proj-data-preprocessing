@@ -63,25 +63,48 @@ reason=<승인 사유>
 
 `warning_id`는 경고 코드·관측값·임계값에서 생성한 안정적인 SHA-256 키입니다. execute는 경고 ID와 관측값이 승인 시점과 같은지 다시 확인합니다. 구조·누수 게이트에는 예외 승인을 적용하지 않습니다.
 
-## 설치 및 실행
+## 설치
 
 ```powershell
 py -3.12 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements.lock
-
-.\.venv\Scripts\python.exe -m battery_v3_8.cli dry-run `
-  --raw-root "<raw 데이터 루트>" --work-dir "<v3.8 작업 폴더>" `
-  --seed 42 --jobs 8
-
-.\.venv\Scripts\python.exe -m battery_v3_8.cli approve-selection `
-  --work-dir "<v3.8 작업 폴더>" --approved-by "<검토자>" --seed 42
-
-.\.venv\Scripts\python.exe -m battery_v3_8.cli execute `
-  --raw-root "<raw 데이터 루트>" --work-dir "<v3.8 작업 폴더>" `
-  --output "<최종 출력 폴더>" --seed 42 --jobs 8
 ```
 
-execute는 raw fingerprint, seed, 선제 제외 정책, 제외 후 ID 통계, 승인된 ID 배정, 품질 예외와 검토 경고 집합을 다시 검증합니다.
+## 실행
+
+`run_pipeline.ps1`이 네 단계의 단일 진입점입니다. 모듈 이름을 폴더에서 찾으므로 버전이 올라가도 스크립트를 고칠 필요가 없습니다. **pwsh(PowerShell 7) 전용**입니다. Windows PowerShell 5.1은 BOM 없는 UTF-8을 ANSI로 읽어 한글 경로에서 깨집니다.
+
+```powershell
+pwsh -File .\run_pipeline.ps1 -Stage dry-run `
+  -RawRoot "<raw 데이터 루트>" -WorkDir "<v3.8 작업 폴더>" -Jobs 8 -Detached
+
+pwsh -File .\run_pipeline.ps1 -Stage approve `
+  -WorkDir "<v3.8 작업 폴더>" -ApprovedBy "<검토자>"
+
+pwsh -File .\run_pipeline.ps1 -Stage execute `
+  -RawRoot "<raw 데이터 루트>" -WorkDir "<v3.8 작업 폴더>" `
+  -Output "<최종 출력 폴더>" -Jobs 8 -Detached
+
+pwsh -File .\run_pipeline.ps1 -Stage upload `
+  -WorkDir "<v3.8 작업 폴더>" -Output "<최종 출력 폴더>" `
+  -Remote "gdrive:<업로드 경로>" -Detached
+```
+
+`-Detached`는 스크립트를 독립 프로세스로 다시 띄웁니다. dry-run과 execute는 각각 약 37분과 100분이 걸리는데, 에이전트 세션의 자식 프로세스는 툴 호출이 끝나면 정리되므로 이 스위치 없이 돌리면 로그도 남기지 못한 채 사라집니다.
+
+진행 상황은 `<작업 폴더>\pipeline.status`에서 확인합니다. 마지막 줄이 `finished ... exit=0`이면 정상 완료입니다.
+
+execute는 raw fingerprint, seed, 선제 제외 정책, 제외 후 ID 통계, 승인된 ID 배정, 품질 예외와 검토 경고 집합을 다시 검증합니다. upload는 각 zip의 크기가 안정되고 중앙 디렉터리가 읽힐 때만 전송하므로 미완성 아카이브가 올라가지 않습니다.
+
+## 선정 로직 검증
+
+선정 로직을 고칠 때 37분짜리 dry-run을 반복하지 않아도 됩니다.
+
+```powershell
+.\.venv\Scripts\python.exe tools\verify_ct_selection.py "<작업 폴더>\reports" --check
+```
+
+완료된 dry-run의 `manifest.csv`에서 CT 샘플을 복원해 파이프라인이 쓰는 선정 함수를 그대로 호출하고, 약 90초 만에 fold 편차와 Test/development 균형을 보여줍니다. `--check`는 산출 결과가 기록된 배정과 일치하는지 확인합니다. **코드를 고치기 전에 이 검사를 먼저 통과시키십시오.** 통과해야만 이 도구의 측정값을 근거로 쓸 수 있습니다.
 
 ## 테스트
 
