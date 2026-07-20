@@ -140,7 +140,11 @@ def _verify_output(root: Path, selection: SelectionResult) -> None:
 
 
 def _zip_tree(root: Path, source: Path, destination: Path) -> None:
-    with zipfile.ZipFile(destination, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=6) as archive:
+    # 수록 대상이 PNG·JPG로 이미 압축돼 있어 deflate 이득이 거의 없다.
+    # v3.6 산출물 표본 측정(각 1,600 파일): deflate level 6은 CT 3.7%, EXT 1.2%만 줄이면서
+    # 처리량이 31~36 MB/s에 그쳐 약 93GB 기준 40분대의 직렬 구간을 만든다.
+    # STORED는 144~314 MB/s로 같은 구간을 크게 줄이고, 늘어난 용량은 업로드 시간 1분 수준이다.
+    with zipfile.ZipFile(destination, "w", compression=zipfile.ZIP_STORED) as archive:
         for path in sorted(source.rglob("*")):
             if path.is_file():
                 archive.write(path, path.relative_to(root).as_posix())
