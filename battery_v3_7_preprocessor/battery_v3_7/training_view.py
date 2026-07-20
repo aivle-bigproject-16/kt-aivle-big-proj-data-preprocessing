@@ -92,7 +92,7 @@ def build_training_view(
                 label = label_root / f"{sample_id}.txt"
                 image = image_lookup.get(sample_id)
                 if not label.exists():
-                    continue  # task-specific image sets are allowed by v3.6
+                    continue  # task-specific image sets are allowed by v3.7
                 if image is None:
                     raise FileNotFoundError(f"image missing for {sample_id}")
                 if sample_id in seen:
@@ -121,4 +121,3 @@ def build_training_view(
         if output.exists():
             shutil.rmtree(output)
         raise
-

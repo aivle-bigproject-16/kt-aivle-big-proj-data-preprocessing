@@ -64,6 +64,15 @@ def _det_line(class_id: int, bounds: tuple[float, float, float, float], fw: floa
     )
 
 
+def _serialized_bbox_ratio(coordinates: Iterable[tuple[float, float]], fw: float, fh: float) -> float:
+    """Round normalized vertices exactly as YOLO segmentation, then take bounds."""
+    normalized = [(float(_fmt(x / fw)), float(_fmt(y / fh))) for x, y in coordinates]
+    if not normalized:
+        return 0.0
+    xs, ys = zip(*normalized)
+    return (max(xs) - min(xs)) * (max(ys) - min(ys))
+
+
 def _seg_line(class_id: int, coordinates: Iterable[tuple[float, float]], fw: float, fh: float) -> str:
     fields = [str(class_id)]
     for x, y in coordinates:
@@ -102,6 +111,9 @@ def convert_defect(class_id: int, raw_points: object, fw: int, fh: int) -> Conve
         changed = True
     polygons = [p for p in _polygons(clipped) if not p.is_empty and p.area > 0]
     if polygons:
+        bbox_ratios: list[float] = []
+        if changed:
+            result.issues.append("polygon_repaired_or_clipped")
         if changed or len(polygons) > 1:
             polygons.sort(key=lambda p: (*p.bounds, p.area, tuple(p.exterior.coords)))
         for polygon in polygons:
@@ -112,11 +124,13 @@ def convert_defect(class_id: int, raw_points: object, fw: int, fh: int) -> Conve
             if len(set(coordinates)) >= 3:
                 result.seg_lines.append(_seg_line(class_id, coordinates, fw, fh))
                 result.det_lines.append(_det_line(class_id, polygon.bounds, fw, fh))
+                bbox_ratios.append(_serialized_bbox_ratio(coordinates, fw, fh))
         result.seg_valid = bool(result.seg_lines)
         result.det_valid = bool(result.det_lines)
         result.multipart_split_count = max(0, len(result.det_lines) - 1)
         result.polygon_count = len(result.seg_lines)
         result.polygon_area_ratio = sum(polygon.area for polygon in polygons) / (fw * fh)
+        result.bbox_max_ratio = max(bbox_ratios, default=0.0)
         return result
 
     line = LineString(points + [points[0]])

@@ -1,7 +1,7 @@
 import unittest
 
-from battery_v3_6.models import Sample
-from battery_v3_6.selection import assign_dataset
+from battery_v3_7.models import Sample
+from battery_v3_7.selection import assign_dataset
 
 
 def sample(sample_id: str, modality: str, battery_id: str, axis: str, defect: bool) -> Sample:
@@ -94,27 +94,55 @@ class SelectionTests(unittest.TestCase):
         }
         self.assertEqual(test_axis_id_counts, {"x": 1, "y": 3, "z": 3})
 
-    def test_ct_area_concentration_is_review_not_gate(self):
-        # 한 개발 ID가 40_50pct 면적 구간을 독점하면(§9.7) 면적 쏠림 경고가 나야 한다.
-        # 그 경고는 §17.3 검토 경고(review_warnings)여야 하고, §17.2 하드 게이트(warnings)에는 없어야 한다.
-        ct_samples = []
-        for battery in range(1, 48):
-            for axis in "xyz":
-                for frame in range(20):
-                    item = sample(f"CT_{battery}_{axis}_{frame}", "CT", str(battery), axis, frame % 5 == 0)
-                    if str(battery) == "20":
-                        item.porosity_area_sum_ratio = 0.45  # 40_50pct 구간
-                    ct_samples.append(item)
-        ext_samples = [item for item in self.samples if item.modality == "EXT"]
+    def test_ct_bbox_ge25_is_excluded_before_split_and_below_boundary_remains(self):
+        samples = list(self.samples)
+        excluded = sample("CT_8_x_large", "CT", "8", "x", True)
+        excluded.porosity_bbox_max_ratio = 0.25
+        retained = sample("CT_8_x_below", "CT", "8", "x", True)
+        retained.porosity_bbox_max_ratio = 0.24999999
+        samples.extend([excluded, retained])
 
         result = assign_dataset(
-            ct_samples + ext_samples,
+            samples,
             seed=42,
             locked_tests={"CT": {str(value) for value in range(1, 8)}},
         )
+        battery_8 = next(
+            stats for stats in result.ids
+            if stats.modality == "CT" and stats.battery_id == "8"
+        )
+        self.assertNotIn(excluded, battery_8.samples)
+        self.assertNotIn(excluded, battery_8.selected_samples)
+        self.assertFalse(excluded.pre_split_eligible)
+        self.assertEqual(excluded.pre_split_exclusion_reason, "ct_porosity_bbox_max_ratio_ge_0.25")
+        self.assertIn(retained, battery_8.selected_samples)
+        self.assertTrue(retained.pre_split_eligible)
 
-        self.assertFalse(any("CT_area_bin" in warning for warning in result.warnings))
-        self.assertTrue(any("CT_area_bin[40_50pct]" in warning for warning in result.review_warnings))
+    def test_ct_bbox_policy_is_applied_to_locked_test_before_metrics(self):
+        samples = list(self.samples)
+        excluded = sample("CT_1_x_large", "CT", "1", "x", True)
+        excluded.porosity_bbox_max_ratio = 0.40
+        samples.append(excluded)
+        result = assign_dataset(
+            samples,
+            seed=42,
+            locked_tests={"CT": {str(value) for value in range(1, 8)}},
+        )
+        test_id = next(
+            stats for stats in result.ids
+            if stats.modality == "CT" and stats.battery_id == "1"
+        )
+        self.assertEqual(test_id.split_role, "test")
+        self.assertNotIn(excluded, test_id.samples)
+        self.assertNotIn(excluded, result.selected_samples)
+
+    def test_ct_id_with_no_remaining_images_fails_structural_gate(self):
+        samples = list(self.samples)
+        for item in samples:
+            if item.modality == "CT" and item.battery_id == "47":
+                item.porosity_bbox_max_ratio = 0.25
+        with self.assertRaisesRegex(ValueError, "CT valid ID count must be exactly 47, got 46"):
+            assign_dataset(samples, seed=42)
 
     def test_ct_test_minimizes_defect_ratio_gap_after_axis_balance(self):
         ct_samples = []
@@ -140,4 +168,3 @@ class SelectionTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

@@ -298,6 +298,10 @@ def _process_pair(result: ScanResult, image_path: Path, json_path: Path) -> Samp
         if sample.modality == "CT" and canonical == "porosity":
             sample.porosity_polygon_count += converted.polygon_count
             sample.porosity_area_sum_ratio += converted.polygon_area_ratio
+            sample.porosity_bbox_max_ratio = max(
+                sample.porosity_bbox_max_ratio,
+                converted.bbox_max_ratio,
+            )
     sample.included_det = bool(target_defects) and all_det
     sample.included_seg = bool(target_defects) and all_seg
     if not sample.included_det:

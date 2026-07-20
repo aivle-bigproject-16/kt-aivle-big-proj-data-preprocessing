@@ -26,6 +26,7 @@ class ConvertedDefect:
     multipart_split_count: int = 0
     polygon_count: int = 0
     polygon_area_ratio: float = 0.0
+    bbox_max_ratio: float = 0.0
     issues: list[str] = field(default_factory=list)
 
 
@@ -66,6 +67,9 @@ class Sample:
     min_extent_applied: bool = False
     porosity_polygon_count: int = 0
     porosity_area_sum_ratio: float = 0.0
+    porosity_bbox_max_ratio: float = 0.0
+    pre_split_eligible: bool = True
+    pre_split_exclusion_reason: str = ""
     selected_rgb_160: bool = False
     split_role: str = ""
     fold_id: str = ""

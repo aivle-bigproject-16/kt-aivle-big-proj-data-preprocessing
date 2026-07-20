@@ -1,11 +1,18 @@
 from __future__ import annotations
 
+import math
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from typing import Callable, Iterable
 
 from .deterministic import largest_remainder, natural_id_key, order_key, quantile_bins, stratified_sample
-from .ct_area import AREA_BIN_ORDER, ct_area_features, porosity_area_bin
+from .ct_area import (
+    AREA_BIN_ORDER,
+    CT_PRE_SPLIT_EXCLUSION_REASON,
+    ct_area_features,
+    is_ct_pre_split_excluded,
+    porosity_area_bin,
+)
 from .metrics import sample_metrics, selected_samples as collect_selected_samples
 from .models import IdStats, Sample
 from .parsing import choose_application
@@ -18,7 +25,7 @@ MAX_SWAP_ROUNDS = 12
 class SelectionResult:
     ids: list[IdStats]
     warnings: list[str] = field(default_factory=list)  # §17.2 하드 게이트(밀도 ±20%, 필수 클래스, det/seg): approve/execute 하드 블록
-    review_warnings: list[str] = field(default_factory=list)  # §17.3 검토 경고(면적 쏠림 등): review_warnings.csv로 나가 acknowledge 필요
+    review_warnings: list[str] = field(default_factory=list)  # §17.3 검토 경고: 감사 기록용이며 자동 실행 차단 대상이 아님
     leakage_rows: list[dict[str, object]] = field(default_factory=list)
 
     @property
@@ -39,6 +46,34 @@ def _id_stats(samples: Iterable[Sample]) -> list[IdStats]:
         application = choose_application([sample.application for sample in group])
         result.append(IdStats(modality, battery_id, application, group))
     return sorted(result, key=lambda stats: (stats.modality, natural_id_key(stats.battery_id)))
+
+
+def apply_pre_split_policy(valid_samples: Iterable[Sample]) -> list[Sample]:
+    """Apply v3.7 policy exclusions before ID statistics and stratification.
+
+    Excluded samples stay on the scanned Sample objects for lineage/reporting,
+    but are absent from the returned split population.  This function is
+    deterministic and safe to call again during execute recomputation.
+    """
+    eligible: list[Sample] = []
+    for sample in valid_samples:
+        if sample.modality == "CT" and (
+            not math.isfinite(sample.porosity_area_sum_ratio)
+            or not math.isfinite(sample.porosity_bbox_max_ratio)
+            or sample.porosity_area_sum_ratio < 0
+            or sample.porosity_bbox_max_ratio < 0
+        ):
+            raise ValueError(f"CT area metric is negative or non-finite: {sample.sample_id}")
+        excluded = is_ct_pre_split_excluded(sample)
+        sample.pre_split_eligible = not excluded
+        sample.pre_split_exclusion_reason = CT_PRE_SPLIT_EXCLUSION_REASON if excluded else ""
+        if excluded:
+            sample.selected = False
+            sample.split_role = ""
+            sample.fold_id = ""
+            continue
+        eligible.append(sample)
+    return eligible
 
 
 def _pooled_ratio(ids: Iterable[IdStats], samples: Callable[[IdStats], list[Sample]] | None = None) -> float:
@@ -195,9 +230,9 @@ def _select_ct_development_samples(development: list[IdStats]) -> None:
 
 
 def _ct_fold_assignment(development: list[IdStats], seed: int) -> dict[int, list[IdStats]]:
-    """Assign 40 whole IDs to five folds while retaining every v3.6 balance metric.
+    """Assign 40 whole IDs to five folds while retaining every v3.7 balance metric.
 
-    v3.6 adds image count, axis, porosity-area bin and axis×area-bin balance.
+    v3.7 adds image count, axis, porosity-area bin and axis×area-bin balance.
     defect_image_ratio remains the primary marginal and annotations_per_image is
     included here and still enforced by the existing post-assignment ±20% gate.
     """
@@ -418,11 +453,6 @@ def _check_ct_area_balance(groups: dict[str, list[IdStats]]) -> list[str]:
     for area_bin, total in totals.items():
         if total and max(counts[name][area_bin] for name in counts) / total >= 0.40 - EPSILON:
             warnings.append(f"CT_area_bin[{area_bin}]: >=40% concentrated in one fold")
-    large_bins = {"25_40pct", "40_50pct", "ge_50pct"}
-    if sum(totals[name] for name in large_bins) and any(
-        sum(counts[fold][name] for name in large_bins) == 0 for fold in counts
-    ):
-        warnings.append("CT_area_ge_25pct: at least one fold has zero images")
     return warnings
 
 
@@ -432,7 +462,8 @@ def assign_dataset(
     locked_tests: dict[str, set[str]] | None = None,
 ) -> SelectionResult:
     locked_tests = locked_tests or {}
-    all_ids = _id_stats(valid_samples)
+    split_population = apply_pre_split_policy(valid_samples)
+    all_ids = _id_stats(split_population)
     ct_ids = [stats for stats in all_ids if stats.modality == "CT"]
     rgb_ids = [stats for stats in all_ids if stats.modality == "EXT"]
     selected_rgb = select_rgb_160(rgb_ids, seed)

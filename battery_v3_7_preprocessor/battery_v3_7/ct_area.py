@@ -19,6 +19,10 @@ AREA_BIN_ORDER = (
     "ge_50pct",
 )
 
+CT_PRE_SPLIT_AREA_THRESHOLD = 0.25
+CT_PRE_SPLIT_POLICY_PRECISION = 8
+CT_PRE_SPLIT_EXCLUSION_REASON = "ct_porosity_bbox_max_ratio_ge_0.25"
+
 
 def porosity_area_bin(value: float) -> str:
     if value < 0 or not math.isfinite(value):
@@ -40,6 +44,19 @@ def porosity_area_bin(value: float) -> str:
     if value < 0.50:
         return "40_50pct"
     return "ge_50pct"
+
+
+def is_ct_pre_split_excluded(sample: Sample) -> bool:
+    """Return whether v3.7 excludes a CT image before any ID split.
+
+    The policy uses the largest component bbox computed from the same normalized
+    8-decimal coordinates written to YOLO. The boundary is inclusive. RGB is
+    deliberately unaffected.
+    """
+    return (
+        sample.modality == "CT"
+        and sample.porosity_bbox_max_ratio >= CT_PRE_SPLIT_AREA_THRESHOLD
+    )
 
 
 def ct_area_features(samples: Iterable[Sample]) -> Counter[str]:

@@ -1,13 +1,19 @@
 from __future__ import annotations
 
 import csv
+import hashlib
+import json
 from collections import Counter, defaultdict
 from pathlib import Path
 from statistics import median
 from typing import Any, Iterable
 
 from .deterministic import natural_id_key
-from .ct_area import AREA_BIN_ORDER, porosity_area_bin
+from .ct_area import (
+    AREA_BIN_ORDER,
+    CT_PRE_SPLIT_AREA_THRESHOLD,
+    porosity_area_bin,
+)
 from .metrics import (
     group_selected_samples,
     report_dataset_group_name,
@@ -26,14 +32,16 @@ MANIFEST_FIELDS = [
     "is_normal_interpreted", "has_damaged", "has_pollution", "has_porosity",
     "defect_image_ratio_id", "pixel_hash", "json_sha256", "dup_group_id", "dup_action",
     "selected_rgb_160", "split_role", "fold_id", "included_det", "included_seg",
+    "pre_split_eligible", "pre_split_exclusion_reason",
     "exclusion_reason_det", "exclusion_reason_seg", "original_defect_count",
     "yolo_det_instance_count", "yolo_seg_instance_count", "multipart_split_count",
     "min_extent_applied", "porosity_polygon_count", "porosity_area_sum_ratio",
+    "porosity_bbox_max_ratio",
     "porosity_area_bin", "ct_stratum",
 ]
 
 CSV_SCHEMAS: dict[str, list[str]] = {
-    "id_scan_report.csv": ["modality", "battery_id", "application", "scanned_pairs", "valid_images", "x_valid", "y_valid", "z_valid", "ct_axis_set_valid", "defect_image_ratio", "annotations_per_image"],
+    "id_scan_report.csv": ["modality", "battery_id", "application", "scanned_pairs", "valid_images", "pre_split_eligible_images", "pre_split_excluded_images", "x_valid", "y_valid", "z_valid", "ct_axis_set_valid", "defect_image_ratio", "annotations_per_image"],
     "split_axis_balance.csv": ["split", "x_images", "y_images", "z_images", "total_images", "x_ratio", "y_ratio", "z_ratio", "x_gap", "y_gap", "z_gap", "axis_max_gap", "axis_sum_gap"],
     "selected_battery_ids_candidate.csv": ["modality", "battery_id", "split_role", "fold_id", "application", "n_valid_images", "n_selected_images", "x_count", "y_count", "z_count", "defect_image_ratio", "annotations_per_image", "has_damaged", "has_pollution"],
     "selected_battery_ids.csv": ["modality", "battery_id", "split_role", "fold_id", "application", "n_valid_images", "n_selected_images", "x_count", "y_count", "z_count", "defect_image_ratio", "annotations_per_image", "has_damaged", "has_pollution"],
@@ -47,6 +55,7 @@ CSV_SCHEMAS: dict[str, list[str]] = {
     "polygon_issues.csv": ["sample_id", "defect_index", "issue"],
     "discarded_stats.csv": ["reason", "count"],
     "dryrun_warnings.csv": ["guard"],
+    "quality_exceptions.csv": ["warning_id", "warning_code", "observed_value", "threshold", "status", "reviewer", "reviewed_at", "reason"],
     "review_warnings.csv": ["warning", "reviewer", "reviewed_at", "status"],
     "class_balance_report.csv": ["row_type", "dataset", "class_name", "battery_ids", "images", "annotations", "defect_image_ratio", "annotations_per_image", "normal_ratio"],
     "task_dataset_comparison.csv": ["dataset", "detection_images", "segmentation_images", "difference", "det_defect_ratio", "seg_defect_ratio"],
@@ -54,12 +63,44 @@ CSV_SCHEMAS: dict[str, list[str]] = {
     "ct_split_area_distribution.csv": ["split", "axis", "area_bin", "image_count", "within_split_share"],
     "ct_split_balance_summary.csv": ["split", "id_count", "image_count", "target_image_ratio", "actual_image_ratio"],
     "ct_large_area_review.csv": ["sample_id", "battery_id", "axis", "porosity_polygon_count", "porosity_area_sum_ratio", "area_bin", "orig_image_path", "orig_json_path"],
+    "ct_bbox_exclusions.csv": ["sample_id", "battery_id", "axis", "porosity_polygon_count", "porosity_area_sum_ratio", "porosity_bbox_max_ratio", "area_bin", "orig_image_path", "orig_json_path", "reason"],
     "manifest.csv": MANIFEST_FIELDS,
 }
 
 
 def fmt_float(value: float) -> str:
     return f"{value:.8f}"
+
+
+def quality_exception_rows(warnings: Iterable[str]) -> list[dict[str, str]]:
+    """Create stable, auditable exception rows for §17.2 quality warnings."""
+    rows: list[dict[str, str]] = []
+    for warning in sorted(set(warnings)):
+        if "annotations_per_image deviation=" in warning:
+            code, threshold = "annotation_density_deviation", "relative_deviation<=0.20"
+        elif "required class missing" in warning:
+            code, threshold = "required_class_missing", "class_count>=1"
+        elif "det/seg gate" in warning:
+            code, threshold = "det_seg_distribution", "seg_exclusion<=0.07;ratio_diff<=0.03"
+        else:
+            code, threshold = "quality_gate", "plan_v3.7"
+        canonical = json.dumps(
+            {"warning_code": code, "observed_value": warning, "threshold": threshold},
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        rows.append({
+            "warning_id": hashlib.sha256(canonical.encode("utf-8")).hexdigest(),
+            "warning_code": code,
+            "observed_value": warning,
+            "threshold": threshold,
+            "status": "pending",
+            "reviewer": "",
+            "reviewed_at": "",
+            "reason": "",
+        })
+    return rows
 
 
 def write_csv(path: Path, fields: list[str], rows: Iterable[dict[str, Any]]) -> None:
@@ -144,13 +185,16 @@ def _id_scan_rows(scan: ScanResult) -> list[dict[str, Any]]:
         group, valid = all_groups.get(key, []), valid_groups.get(key, [])
         applications = Counter(sample.application for sample in valid)
         application = min(applications, key=lambda value: (-applications[value], value)) if applications else ""
-        metrics = sample_metrics(valid)
-        axis_counts = {axis: sum(sample.axis == axis for sample in valid) for axis in "xyz"}
+        eligible = [sample for sample in valid if sample.pre_split_eligible]
+        metrics = sample_metrics(eligible)
+        axis_counts = {axis: sum(sample.axis == axis for sample in eligible) for axis in "xyz"}
         rows.append({
             "modality": key[0], "battery_id": key[1], "application": application,
             "scanned_pairs": len(group), "valid_images": len(valid),
+            "pre_split_eligible_images": len(eligible),
+            "pre_split_excluded_images": len(valid) - len(eligible),
             "x_valid": axis_counts["x"], "y_valid": axis_counts["y"], "z_valid": axis_counts["z"],
-            "ct_axis_set_valid": key[0] != "CT" or all(sample.axis in "xyz" for sample in valid),
+            "ct_axis_set_valid": key[0] != "CT" or all(sample.axis in "xyz" for sample in eligible),
             "defect_image_ratio": fmt_float(metrics.defect_image_ratio), "annotations_per_image": fmt_float(metrics.annotations_per_image),
         })
     return rows
@@ -199,6 +243,8 @@ def _ct_axis_balance_rows(selection: SelectionResult) -> list[dict[str, Any]]:
 def _manifest_rows(scan: ScanResult, selection: SelectionResult) -> list[dict[str, Any]]:
     valid_by_id: dict[tuple[str, str], list[Sample]] = defaultdict(list)
     for sample in scan.valid_samples:
+        if not sample.pre_split_eligible:
+            continue
         valid_by_id[(sample.modality, sample.battery_id)].append(sample)
     ratios = {key: sample_metrics(group).defect_image_ratio for key, group in valid_by_id.items()}
     id_roles = {(stats.modality, stats.battery_id): (stats.split_role, stats.fold_id) for stats in selection.ids}
@@ -211,9 +257,12 @@ def _manifest_rows(scan: ScanResult, selection: SelectionResult) -> list[dict[st
         final_seg = sample.included_seg and sample.selected
         det_reason = sample.exclusion_reason_det
         seg_reason = sample.exclusion_reason_seg
-        if sample.included_det and not sample.selected:
+        if not sample.pre_split_eligible:
+            det_reason = sample.pre_split_exclusion_reason
+            seg_reason = sample.pre_split_exclusion_reason
+        elif sample.included_det and not sample.selected:
             det_reason = "id_sampling_cap" if (sample.modality, sample.battery_id) in id_roles else "rgb_id_not_selected"
-        if sample.included_seg and not sample.selected:
+        if sample.pre_split_eligible and sample.included_seg and not sample.selected:
             seg_reason = "id_sampling_cap" if (sample.modality, sample.battery_id) in id_roles else "rgb_id_not_selected"
         rows.append({
             "sample_id": sample.sample_id, "original_stem": sample.original_stem,
@@ -236,8 +285,11 @@ def _manifest_rows(scan: ScanResult, selection: SelectionResult) -> list[dict[st
             "multipart_split_count": sample.multipart_split_count, "min_extent_applied": sample.min_extent_applied,
             "porosity_polygon_count": sample.porosity_polygon_count if sample.modality == "CT" else "",
             "porosity_area_sum_ratio": fmt_float(sample.porosity_area_sum_ratio) if sample.modality == "CT" else "",
+            "porosity_bbox_max_ratio": fmt_float(sample.porosity_bbox_max_ratio) if sample.modality == "CT" else "",
             "porosity_area_bin": porosity_area_bin(sample.porosity_area_sum_ratio) if sample.modality == "CT" else "",
             "ct_stratum": f"{sample.axis}|{porosity_area_bin(sample.porosity_area_sum_ratio)}" if sample.modality == "CT" else "",
+            "pre_split_eligible": sample.pre_split_eligible,
+            "pre_split_exclusion_reason": sample.pre_split_exclusion_reason,
         })
     return rows
 
@@ -275,7 +327,7 @@ def _ct_split_balance_rows(selection: SelectionResult) -> list[dict[str, Any]]:
     return rows
 
 
-def _ct_large_area_review_rows(selection: SelectionResult) -> list[dict[str, Any]]:
+def _ct_large_area_review_rows(scan: ScanResult) -> list[dict[str, Any]]:
     return [
         {
             "sample_id": sample.sample_id,
@@ -287,8 +339,27 @@ def _ct_large_area_review_rows(selection: SelectionResult) -> list[dict[str, Any
             "orig_image_path": str(sample.image_path or ""),
             "orig_json_path": str(sample.json_path or ""),
         }
-        for sample in selection.selected_samples
+        for sample in scan.valid_samples
         if sample.modality == "CT" and sample.porosity_area_sum_ratio >= 0.40
+    ]
+
+
+def _ct_bbox_exclusion_rows(scan: ScanResult) -> list[dict[str, Any]]:
+    return [
+        {
+            "sample_id": sample.sample_id,
+            "battery_id": sample.battery_id,
+            "axis": sample.axis,
+            "porosity_polygon_count": sample.porosity_polygon_count,
+            "porosity_area_sum_ratio": fmt_float(sample.porosity_area_sum_ratio),
+            "porosity_bbox_max_ratio": fmt_float(sample.porosity_bbox_max_ratio),
+            "area_bin": porosity_area_bin(sample.porosity_area_sum_ratio),
+            "orig_image_path": str(sample.image_path or ""),
+            "orig_json_path": str(sample.json_path or ""),
+            "reason": sample.pre_split_exclusion_reason,
+        }
+        for sample in scan.valid_samples
+        if not sample.pre_split_eligible
     ]
 
 
@@ -306,11 +377,55 @@ def quality_warnings(scan: ScanResult, selection: SelectionResult) -> tuple[list
 
     gate = §17.2 하드 품질 게이트(밀도 ±20%, 필수 클래스 부재, det/seg 게이트). approve/execute를 하드 블록한다.
     review = §17.3 검토 경고(면적 구간 쏠림, fold 이미지 비율 5%p, Test 100장 미만, Test 제외율 20% 이상).
-             `review_warnings.csv`로 나가 검토자 acknowledge가 있어야 approve/execute가 진행된다.
+             `review_warnings.csv`에 감사 기록으로 남지만 approve/execute를 자동 차단하지 않는다.
     계획서 §17.2/§17.3 분류를 코드로 그대로 반영한다. 어느 경고도 숨기지 않으며 누수 게이트는 건드리지 않는다(§22.8).
     """
     gate = list(selection.warnings)
     review = list(selection.review_warnings)
+    leaked_large = [
+        sample.sample_id
+        for sample in selection.selected_samples
+        if sample.modality == "CT"
+        and sample.porosity_bbox_max_ratio >= CT_PRE_SPLIT_AREA_THRESHOLD
+    ]
+    if leaked_large:
+        raise RuntimeError(
+            f"structural CT bbox policy gate failed: {len(leaked_large)} selected image(s) >=25%"
+        )
+    original_large = [
+        sample
+        for sample in scan.samples
+        if sample.included_det
+        and sample.modality == "CT"
+        and sample.porosity_area_sum_ratio >= 0.40
+    ]
+    if original_large:
+        review.append(
+            f"CT original population: {len(original_large)} valid image(s) have porosity area >=40%; "
+            "see ct_large_area_review.csv"
+        )
+    split_population = [sample for sample in scan.valid_samples if sample.pre_split_eligible]
+    applications: dict[tuple[str, str], set[str]] = defaultdict(set)
+    for sample in split_population:
+        if sample.application:
+            applications[(sample.modality, sample.battery_id)].add(sample.application)
+    for (modality, battery_id), values in sorted(applications.items()):
+        if len(values) > 1:
+            review.append(
+                f"mixed application within ID {modality}/{battery_id}: {','.join(sorted(values))}"
+            )
+    eligible_ids = {sample.sample_id for sample in split_population}
+    repaired = sum(
+        row.get("issue") == "polygon_repaired_or_clipped" and row.get("sample_id") in eligible_ids
+        for row in scan.polygon_issues
+    )
+    multipart = sum(sample.multipart_split_count for sample in split_population)
+    min_extent = sum(sample.min_extent_applied for sample in split_population)
+    if repaired or multipart or min_extent:
+        review.append(
+            f"geometry review totals: repaired_or_clipped={repaired}, "
+            f"multipart_extra_pieces={multipart}, min_extent_images={min_extent}"
+        )
     groups = group_selected_samples(selection.ids, split_fold_group_name)
     all_selected = selection.selected_samples
     groups.update({
@@ -483,7 +598,7 @@ def _eda_markdown(scan: ScanResult, selection: SelectionResult, warnings: list[s
     issue_rows = [[f"json:{issue}", count] for issue, count in sorted(anomaly_counts.items())]
     issue_rows += [[f"polygon:{issue}", count] for issue, count in sorted(polygon_counts.items())]
     return (
-        "# v3.6 post-crop EDA (dry-run estimate)\n\n"
+        "# v3.7 post-crop EDA (dry-run estimate)\n\n"
         "`execute` 전에는 CT crop 결과를 쓰지 않으므로 픽셀 통계가 아닌 확정 ROI/YOLO 변환 결과를 집계한다.\n\n"
         "## Dataset summary\n\n"
         + _markdown_table(["dataset", "IDs", "det images", "seg images", "defect ratio", "ann/image", "normal ratio", "x/y/z"], summary_rows)
@@ -509,7 +624,29 @@ def write_reports(scan: ScanResult, selection: SelectionResult, report_dir: Path
         {"warning": warning, "reviewer": "", "reviewed_at": "", "status": "pending"}
         for warning in review_warnings
     ]
+    exception_rows = quality_exception_rows(gate_warnings)
     manifest_rows = _manifest_rows(scan, selection)
+    bbox_exclusion_rows = _ct_bbox_exclusion_rows(scan)
+    area_distribution_rows = _ct_area_distribution_rows(selection)
+    valid_ct = [sample for sample in scan.valid_samples if sample.modality == "CT"]
+    eligible_ct = [sample for sample in valid_ct if sample.pre_split_eligible]
+    excluded_ct = [sample for sample in valid_ct if not sample.pre_split_eligible]
+    if len(valid_ct) != len(eligible_ct) + len(excluded_ct):
+        raise RuntimeError("structural report gate failed: CT valid != eligible + excluded")
+    manifest_excluded_ids = {
+        row["sample_id"]
+        for row in manifest_rows
+        if row["modality"] == "CT" and not row["pre_split_eligible"]
+    }
+    bbox_excluded_ids = {row["sample_id"] for row in bbox_exclusion_rows}
+    if manifest_excluded_ids != bbox_excluded_ids:
+        raise RuntimeError("structural report gate failed: manifest and ct_bbox_exclusions differ")
+    manifest_selected_ct = sum(
+        row["modality"] == "CT" and row["included_det"] for row in manifest_rows
+    )
+    distributed_ct = sum(int(row["image_count"]) for row in area_distribution_rows)
+    if manifest_selected_ct != distributed_ct:
+        raise RuntimeError("structural report gate failed: manifest and CT distribution counts differ")
     discarded = Counter(row["exclusion_reason_det"] for row in manifest_rows if not row["included_det"])
     selected_rows = selected_id_rows(selection)
     test_rows = [{"modality": row["modality"], "battery_id": row["battery_id"]} for row in selected_rows if row["split_role"] == "test"]
@@ -526,13 +663,15 @@ def write_reports(scan: ScanResult, selection: SelectionResult, report_dir: Path
         "polygon_issues.csv": scan.polygon_issues,
         "discarded_stats.csv": [{"reason": reason, "count": count} for reason, count in sorted(discarded.items())],
         "dryrun_warnings.csv": [{"guard": warning} for warning in gate_warnings],
+        "quality_exceptions.csv": exception_rows,
         "review_warnings.csv": review_rows,
         "class_balance_report.csv": _balance_rows(selection),
         "task_dataset_comparison.csv": _comparison_rows(selection),
         "split_id_leakage_audit.csv": leakage_rows(selection),
-        "ct_split_area_distribution.csv": _ct_area_distribution_rows(selection),
+        "ct_split_area_distribution.csv": area_distribution_rows,
         "ct_split_balance_summary.csv": _ct_split_balance_rows(selection),
-        "ct_large_area_review.csv": _ct_large_area_review_rows(selection),
+        "ct_large_area_review.csv": _ct_large_area_review_rows(scan),
+        "ct_bbox_exclusions.csv": bbox_exclusion_rows,
         "manifest.csv": manifest_rows,
     }
     for filename, fields in CSV_SCHEMAS.items():
@@ -546,13 +685,14 @@ def write_reports(scan: ScanResult, selection: SelectionResult, report_dir: Path
     raw_ids = {modality: len({battery_id for current_modality, battery_id in scan.raw_image_counts if current_modality == modality}) for modality in ("CT", "EXT")}
     valid_ids = {modality: len({sample.battery_id for sample in scan.valid_samples if sample.modality == modality}) for modality in ("CT", "EXT")}
     (report_dir / "scan_summary.md").write_text(
-        "# v3.6 dry-run scan summary\n\n"
+        "# v3.7 dry-run scan summary\n\n"
         f"- Raw fingerprint: `{scan.raw_fingerprint}`\n"
         f"- Scanned matched samples: CT {modality_counts['CT']:,}, EXT {modality_counts['EXT']:,}\n"
         f"- Valid detection samples: CT {valid_counts['CT']:,}, EXT {valid_counts['EXT']:,}\n"
         f"- Parsed raw IDs: CT {raw_ids['CT']:,}, EXT {raw_ids['EXT']:,}\n"
         f"- Valid IDs: CT {valid_ids['CT']:,}, EXT {valid_ids['EXT']:,}\n"
         f"- Selected IDs: CT 47, EXT 160\n"
+        f"- CT pre-split bbox exclusions (>=25%): {sum(not sample.pre_split_eligible for sample in scan.valid_samples if sample.modality == 'CT'):,}\n"
         f"- Matching issues: {len(scan.matching_issues):,}\n"
         f"- Corrupt images: {len(scan.corrupt_images):,}\n"
         f"- Pixel duplicate rows: {len(scan.pixel_duplicates):,}\n"
@@ -571,4 +711,3 @@ def write_reports(scan: ScanResult, selection: SelectionResult, report_dir: Path
     (report_dir / "eda_v3_postcrop.md").write_text(_eda_markdown(scan, selection, gate_warnings, manifest_rows), encoding="utf-8", newline="\n")
     (report_dir / "raw_fingerprint.sha256").write_text(scan.raw_fingerprint + "\n", encoding="ascii", newline="\n")
     return gate_warnings
-

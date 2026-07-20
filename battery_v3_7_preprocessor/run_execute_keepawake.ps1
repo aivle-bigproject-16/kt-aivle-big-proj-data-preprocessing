@@ -41,7 +41,7 @@ try {
     [Win32.PowerExec]::SetThreadExecutionState($flags) | Out-Null
     $argList = @()
     if ($PythonArgs) { $argList += $PythonArgs.Split(" ") }
-    $argList += @("-m", "battery_v3_6.cli", "execute",
+    $argList += @("-m", "battery_v3_7.cli", "execute",
                   "--raw-root", $RawRoot,
                   "--work-dir", $WorkDir,
                   "--output", $Output,

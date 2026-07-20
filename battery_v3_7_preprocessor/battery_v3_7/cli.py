@@ -16,7 +16,7 @@ def _jobs_arg(parser: argparse.ArgumentParser) -> None:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="battery-v3.6", description="Battery preprocessing v3.6")
+    parser = argparse.ArgumentParser(prog="battery-v3.7", description="Battery preprocessing v3.7")
     subparsers = parser.add_subparsers(dest="command", required=True)
     dry = subparsers.add_parser("dry-run", help="scan, validate, select, and write reports only")
     dry.add_argument("--raw-root", type=Path, required=True)
@@ -84,4 +84,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

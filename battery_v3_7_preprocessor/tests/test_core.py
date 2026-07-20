@@ -4,7 +4,7 @@ from pathlib import Path
 
 from PIL import Image
 
-from battery_v3_6.deterministic import (
+from battery_v3_7.deterministic import (
     largest_remainder,
     normalize_battery_id,
     order_key,
@@ -12,9 +12,9 @@ from battery_v3_6.deterministic import (
     sample_id_for,
     stratified_sample,
 )
-from battery_v3_6.geometry import convert_defect
-from battery_v3_6.models import Sample
-from battery_v3_6.parsing import (
+from battery_v3_7.geometry import convert_defect
+from battery_v3_7.models import Sample
+from battery_v3_7.parsing import (
     canonical_class,
     deduplicate_defects,
     normalize_application,
@@ -107,7 +107,7 @@ class GeometryTests(unittest.TestCase):
 
 class PixelHashTests(unittest.TestCase):
     def test_hash_uses_decoded_rgb_pixels_not_file_bytes(self):
-        from battery_v3_6.scan import pixel_sha1
+        from battery_v3_7.scan import pixel_sha1
 
         with tempfile.TemporaryDirectory() as tmp:
             a = Path(tmp) / "a.png"

@@ -3,13 +3,76 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from battery_v3_6.models import IdStats, Sample
-from battery_v3_6.reports import write_reports
-from battery_v3_6.scan import ScanResult
-from battery_v3_6.selection import SelectionResult
+from battery_v3_7.models import IdStats, Sample
+from battery_v3_7.reports import write_reports
+from battery_v3_7.scan import ScanResult
+from battery_v3_7.selection import SelectionResult
 
 
 class ReportTests(unittest.TestCase):
+    def test_selected_bbox_policy_leak_is_non_overridable_structural_failure(self):
+        leaked = Sample(
+            sample_id="CT__leaked__00000001", modality="CT", battery_id="1", axis="x",
+            included_det=True, included_seg=True, selected=True,
+            porosity_bbox_max_ratio=0.25,
+        )
+        stats = IdStats("CT", "1", "industrial", [leaked], [leaked], "test", "")
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaisesRegex(RuntimeError, "structural CT bbox policy gate failed"):
+                write_reports(
+                    ScanResult(raw_root=Path("."), samples=[leaked]),
+                    SelectionResult([stats]),
+                    Path(tmp),
+                )
+
+    def test_original_ge_40pct_images_are_recorded_as_review_warning(self):
+        removed = Sample(
+            sample_id="CT__large__00000001", modality="CT", battery_id="134", axis="z",
+            included_det=True, porosity_area_sum_ratio=0.40, pre_split_eligible=False,
+            porosity_bbox_max_ratio=0.40,
+            pre_split_exclusion_reason="ct_porosity_bbox_max_ratio_ge_0.25",
+        )
+        scan = ScanResult(raw_root=Path("."), samples=[removed])
+        with tempfile.TemporaryDirectory() as tmp:
+            report_dir = Path(tmp)
+            write_reports(scan, SelectionResult([]), report_dir)
+            with (report_dir / "review_warnings.csv").open("r", encoding="utf-8-sig", newline="") as stream:
+                rows = list(csv.DictReader(stream))
+            self.assertEqual(len(rows), 1)
+            self.assertIn("1 valid image(s)", rows[0]["warning"])
+            self.assertEqual(rows[0]["status"], "pending")
+
+    def test_reports_preserve_pre_split_exclusion_lineage(self):
+        kept = Sample(
+            sample_id="CT__kept__00000001", modality="CT", battery_id="1", axis="x",
+            included_det=True, included_seg=True, selected=True,
+            split_role="development", fold_id="0", porosity_area_sum_ratio=0.30,
+            porosity_bbox_max_ratio=0.24999999,
+        )
+        removed = Sample(
+            sample_id="CT__removed__00000002", modality="CT", battery_id="1", axis="z",
+            included_det=True, included_seg=True, selected=False,
+            porosity_area_sum_ratio=0.10, porosity_bbox_max_ratio=0.25,
+            pre_split_eligible=False,
+            pre_split_exclusion_reason="ct_porosity_bbox_max_ratio_ge_0.25",
+        )
+        ids = [IdStats("CT", "1", "industrial", [kept], [kept], "development", "0")]
+        scan = ScanResult(raw_root=Path("."), samples=[kept, removed])
+        with tempfile.TemporaryDirectory() as tmp:
+            report_dir = Path(tmp)
+            write_reports(scan, SelectionResult(ids), report_dir)
+            with (report_dir / "ct_bbox_exclusions.csv").open("r", encoding="utf-8-sig", newline="") as stream:
+                excluded_rows = list(csv.DictReader(stream))
+            self.assertEqual([row["sample_id"] for row in excluded_rows], [removed.sample_id])
+            with (report_dir / "manifest.csv").open("r", encoding="utf-8-sig", newline="") as stream:
+                manifest = {row["sample_id"]: row for row in csv.DictReader(stream)}
+            self.assertEqual(manifest[removed.sample_id]["included_det"], "False")
+            self.assertEqual(
+                manifest[removed.sample_id]["exclusion_reason_det"],
+                "ct_porosity_bbox_max_ratio_ge_0.25",
+            )
+            self.assertEqual(manifest[removed.sample_id]["porosity_bbox_max_ratio"], "0.25000000")
+
     def test_report_rows_are_sorted_and_eda_has_each_ct_fold(self):
         samples = []
         ids = []
@@ -91,7 +154,7 @@ class ReportTests(unittest.TestCase):
             self.assertEqual(rows[0]["axis_max_gap"], "1.00000000")
             self.assertEqual(rows[1]["axis_sum_gap"], "2.00000000")
             self.assertEqual(
-                {axis: rows[0][f"{axis}_gap"] for axis in "xyz"},
+                {axis: rows[1][f"{axis}_gap"] for axis in "xyz"},
                 {"x": "1.00000000", "y": "1.00000000", "z": "0.00000000"},
             )
             self.assertEqual(
@@ -102,4 +165,3 @@ class ReportTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-
