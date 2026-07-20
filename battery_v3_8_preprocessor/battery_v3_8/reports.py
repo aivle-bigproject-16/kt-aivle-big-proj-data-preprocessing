@@ -63,6 +63,7 @@ CSV_SCHEMAS: dict[str, list[str]] = {
     "ct_split_area_distribution.csv": ["split", "axis", "area_bin", "image_count", "within_split_share"],
     "ct_split_balance_summary.csv": ["split", "id_count", "image_count", "target_image_ratio", "actual_image_ratio"],
     "ct_large_area_review.csv": ["sample_id", "battery_id", "axis", "porosity_polygon_count", "porosity_area_sum_ratio", "area_bin", "orig_image_path", "orig_json_path"],
+    "ct_id_exclusions.csv": ["battery_id", "gate", "observed", "threshold", "reason"],
     "ct_bbox_exclusions.csv": ["sample_id", "battery_id", "axis", "porosity_polygon_count", "porosity_area_sum_ratio", "porosity_bbox_max_ratio", "area_bin", "orig_image_path", "orig_json_path", "reason"],
     "manifest.csv": MANIFEST_FIELDS,
 }
@@ -83,7 +84,7 @@ def quality_exception_rows(warnings: Iterable[str]) -> list[dict[str, str]]:
         elif "det/seg gate" in warning:
             code, threshold = "det_seg_distribution", "seg_exclusion<=0.07;ratio_diff<=0.03"
         else:
-            code, threshold = "quality_gate", "plan_v3.7"
+            code, threshold = "quality_gate", "plan_v3.8"
         canonical = json.dumps(
             {"warning_code": code, "observed_value": warning, "threshold": threshold},
             ensure_ascii=False,
@@ -598,7 +599,7 @@ def _eda_markdown(scan: ScanResult, selection: SelectionResult, warnings: list[s
     issue_rows = [[f"json:{issue}", count] for issue, count in sorted(anomaly_counts.items())]
     issue_rows += [[f"polygon:{issue}", count] for issue, count in sorted(polygon_counts.items())]
     return (
-        "# v3.7 post-crop EDA (dry-run estimate)\n\n"
+        "# v3.8 post-crop EDA (dry-run estimate)\n\n"
         "`execute` 전에는 CT crop 결과를 쓰지 않으므로 픽셀 통계가 아닌 확정 ROI/YOLO 변환 결과를 집계한다.\n\n"
         "## Dataset summary\n\n"
         + _markdown_table(["dataset", "IDs", "det images", "seg images", "defect ratio", "ann/image", "normal ratio", "x/y/z"], summary_rows)
@@ -671,6 +672,7 @@ def write_reports(scan: ScanResult, selection: SelectionResult, report_dir: Path
         "ct_split_area_distribution.csv": area_distribution_rows,
         "ct_split_balance_summary.csv": _ct_split_balance_rows(selection),
         "ct_large_area_review.csv": _ct_large_area_review_rows(scan),
+        "ct_id_exclusions.csv": list(selection.ct_id_gate_rows),
         "ct_bbox_exclusions.csv": bbox_exclusion_rows,
         "manifest.csv": manifest_rows,
     }
@@ -685,13 +687,14 @@ def write_reports(scan: ScanResult, selection: SelectionResult, report_dir: Path
     raw_ids = {modality: len({battery_id for current_modality, battery_id in scan.raw_image_counts if current_modality == modality}) for modality in ("CT", "EXT")}
     valid_ids = {modality: len({sample.battery_id for sample in scan.valid_samples if sample.modality == modality}) for modality in ("CT", "EXT")}
     (report_dir / "scan_summary.md").write_text(
-        "# v3.7 dry-run scan summary\n\n"
+        "# v3.8 dry-run scan summary\n\n"
         f"- Raw fingerprint: `{scan.raw_fingerprint}`\n"
         f"- Scanned matched samples: CT {modality_counts['CT']:,}, EXT {modality_counts['EXT']:,}\n"
         f"- Valid detection samples: CT {valid_counts['CT']:,}, EXT {valid_counts['EXT']:,}\n"
         f"- Parsed raw IDs: CT {raw_ids['CT']:,}, EXT {raw_ids['EXT']:,}\n"
         f"- Valid IDs: CT {valid_ids['CT']:,}, EXT {valid_ids['EXT']:,}\n"
-        f"- Selected IDs: CT 47, EXT 160\n"
+        f"- CT IDs dropped by ID gates: {len(selection.ct_id_gate_rows):,}\n"
+        f"- Selected IDs: CT {len({stats.battery_id for stats in selection.ids if stats.modality == 'CT'}):,}, EXT {len({stats.battery_id for stats in selection.ids if stats.modality == 'EXT'}):,}\n"
         f"- CT pre-split bbox exclusions (>=25%): {sum(not sample.pre_split_eligible for sample in scan.valid_samples if sample.modality == 'CT'):,}\n"
         f"- Matching issues: {len(scan.matching_issues):,}\n"
         f"- Corrupt images: {len(scan.corrupt_images):,}\n"

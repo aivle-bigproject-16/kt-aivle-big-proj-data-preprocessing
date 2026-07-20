@@ -1,4 +1,4 @@
-# 🔋 배터리 결함 이미지 데이터 전처리 파이프라인 (v3.7)
+# 🔋 배터리 결함 이미지 데이터 전처리 파이프라인 (v3.8)
 
 ![Python](https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white)
 ![Pillow](https://img.shields.io/badge/Pillow-12.2.0-2C2D72)
@@ -9,7 +9,7 @@
 
 **KT AIVLE School 9기 빅프로젝트 16조**의 CT·RGB 배터리 결함 이미지 전처리 코드입니다. 원본을 읽기 전용으로 스캔·검증하고, Battery ID 단위로 분할해 YOLO detection·segmentation 학습 데이터와 감사 보고서를 결정론적으로 생성합니다.
 
-## v3.7 핵심 변경
+## v3.8 핵심 변경
 
 CT polygon 복구·ROI clipping·multipart 분리 후 각 유효 조각의 정규화 좌표를 소수점 8자리로 직렬화합니다. 이 좌표에서 계산한 개별 bbox 면적비의 이미지별 최댓값을 `porosity_bbox_max_ratio`로 정의합니다.
 
@@ -41,42 +41,42 @@ scan·검증
 ## 저장소 구조
 
 ```text
-battery_v3_7_preprocessor/
-├─ battery_v3_7/          # 스캔·geometry·선정·보고서·출력·승인 파이프라인
+battery_v3_8_preprocessor/
+├─ battery_v3_8/          # 스캔·geometry·선정·보고서·출력·승인 파이프라인
 ├─ tests/                 # 단위·통합 회귀 테스트
 ├─ pyproject.toml
 ├─ requirements.lock
 └─ README.md              # 상세 설치·실행·보고서 설명
 
-데이터_전처리_v3.7_전체구현계획.md
+데이터_전처리_v3.8_전체구현계획.md
 ```
 
-v3.6 코드는 이력 보존을 위해 기존 디렉터리에 유지합니다. v3.6 work-dir, 승인 파일, 선택 ID CSV는 v3.7에서 재사용할 수 없습니다.
+v3.6 코드는 이력 보존을 위해 기존 디렉터리에 유지합니다. v3.6 work-dir, 승인 파일, 선택 ID CSV는 v3.8에서 재사용할 수 없습니다.
 
 ## 실행
 
 ```powershell
-cd battery_v3_7_preprocessor
+cd battery_v3_8_preprocessor
 py -3.12 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements.lock
 
-.\.venv\Scripts\python.exe -m battery_v3_7.cli dry-run `
-  --raw-root "<raw 데이터 루트>" --work-dir "<v3.7 작업 폴더>" --seed 42 --jobs 8
+.\.venv\Scripts\python.exe -m battery_v3_8.cli dry-run `
+  --raw-root "<raw 데이터 루트>" --work-dir "<v3.8 작업 폴더>" --seed 42 --jobs 8
 
-.\.venv\Scripts\python.exe -m battery_v3_7.cli approve-selection `
-  --work-dir "<v3.7 작업 폴더>" --approved-by "<검토자>" --seed 42
+.\.venv\Scripts\python.exe -m battery_v3_8.cli approve-selection `
+  --work-dir "<v3.8 작업 폴더>" --approved-by "<검토자>" --seed 42
 
-.\.venv\Scripts\python.exe -m battery_v3_7.cli execute `
-  --raw-root "<raw 데이터 루트>" --work-dir "<v3.7 작업 폴더>" `
-  --output "<v3.7 출력 폴더>" --seed 42 --jobs 8
+.\.venv\Scripts\python.exe -m battery_v3_8.cli execute `
+  --raw-root "<raw 데이터 루트>" --work-dir "<v3.8 작업 폴더>" `
+  --output "<v3.8 출력 폴더>" --seed 42 --jobs 8
 ```
 
-상세한 보고서, 품질 예외 승인, `training-view` 사용법은 [`battery_v3_7_preprocessor/README.md`](battery_v3_7_preprocessor/README.md)를 참고하세요. 확정 정책은 [`데이터_전처리_v3.7_전체구현계획.md`](데이터_전처리_v3.7_전체구현계획.md)에 있습니다.
+상세한 보고서, 품질 예외 승인, `training-view` 사용법은 [`battery_v3_8_preprocessor/README.md`](battery_v3_8_preprocessor/README.md)를 참고하세요. 확정 정책은 [`데이터_전처리_v3.8_전체구현계획.md`](데이터_전처리_v3.8_전체구현계획.md)에 있습니다.
 
 ## 검증
 
 ```powershell
-python -m compileall -q battery_v3_7 tests
+python -m compileall -q battery_v3_8 tests
 python -m unittest discover -s tests -v
 ```
 

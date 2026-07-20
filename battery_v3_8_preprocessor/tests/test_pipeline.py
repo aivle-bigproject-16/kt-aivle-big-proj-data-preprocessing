@@ -3,8 +3,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from battery_v3_7.pipeline import approve_selection, execute
-from battery_v3_7.reports import CSV_SCHEMAS, quality_exception_rows, write_csv
+from battery_v3_8.pipeline import approve_selection, execute
+from battery_v3_8.reports import CSV_SCHEMAS, quality_exception_rows, write_csv
 
 
 class PipelineTests(unittest.TestCase):

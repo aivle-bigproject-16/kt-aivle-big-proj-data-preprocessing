@@ -1,8 +1,8 @@
 import unittest
 
-from battery_v3_7.ct_area import is_ct_pre_split_excluded, porosity_area_bin
-from battery_v3_7.models import Sample
-from battery_v3_7.geometry import convert_defect
+from battery_v3_8.ct_area import is_ct_pre_split_excluded, porosity_area_bin
+from battery_v3_8.models import Sample
+from battery_v3_8.geometry import convert_defect
 
 
 class CTAreaTests(unittest.TestCase):
@@ -51,7 +51,7 @@ class CTAreaTests(unittest.TestCase):
         self.assertFalse(is_ct_pre_split_excluded(rgb))
 
     def test_non_finite_bbox_ratio_is_rejected_by_split_policy(self):
-        from battery_v3_7.selection import apply_pre_split_policy
+        from battery_v3_8.selection import apply_pre_split_policy
 
         invalid = Sample("invalid", modality="CT", porosity_bbox_max_ratio=float("nan"))
         with self.assertRaisesRegex(ValueError, "non-finite"):

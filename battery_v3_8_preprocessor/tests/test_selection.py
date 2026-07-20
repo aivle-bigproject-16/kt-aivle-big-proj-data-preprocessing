@@ -1,7 +1,8 @@
 import unittest
+from collections import Counter
 
-from battery_v3_7.models import Sample
-from battery_v3_7.selection import assign_dataset
+from battery_v3_8.models import Sample
+from battery_v3_8.selection import assign_dataset
 
 
 def sample(sample_id: str, modality: str, battery_id: str, axis: str, defect: bool) -> Sample:
@@ -136,13 +137,42 @@ class SelectionTests(unittest.TestCase):
         self.assertNotIn(excluded, test_id.samples)
         self.assertNotIn(excluded, result.selected_samples)
 
-    def test_ct_id_with_no_remaining_images_fails_structural_gate(self):
+    def test_ct_id_losing_every_image_is_dropped_and_structure_adapts(self):
+        """v3.8 sizes the split from the surviving IDs instead of demanding 47.
+
+        An ID whose images are all excluded by the image rule is removed by the
+        contamination gate, and the remaining 46 IDs form five folds of seven
+        with the rest going to Test.
+        """
         samples = list(self.samples)
         for item in samples:
             if item.modality == "CT" and item.battery_id == "47":
                 item.porosity_bbox_max_ratio = 0.25
-        with self.assertRaisesRegex(ValueError, "CT valid ID count must be exactly 47, got 46"):
-            assign_dataset(samples, seed=42)
+        result = assign_dataset(samples, seed=42)
+        ct_ids = {stats.battery_id for stats in result.ids if stats.modality == "CT"}
+        self.assertNotIn("47", ct_ids)
+        self.assertEqual(len(ct_ids), 46)
+        # An ID that loses every image is already absent from the split population,
+        # so the image rule removes it before the ID gate can see it.
+        folds = Counter(
+            stats.fold_id for stats in result.ids
+            if stats.modality == "CT" and stats.split_role == "development"
+        )
+        self.assertEqual(sorted(folds.values()), [7, 7, 7, 7, 7])
+        test_ids = [stats for stats in result.ids if stats.modality == "CT" and stats.split_role == "test"]
+        self.assertEqual(len(test_ids), 11)
+
+    def test_ct_id_density_gate_ignores_a_degenerate_interquartile_range(self):
+        """With few defect-bearing IDs, Q3 equals Q1 and no outlier is defined.
+
+        Firing the fence there would drop every ID that carries an annotation,
+        so the gate has to stand down instead.
+        """
+        result = assign_dataset(list(self.samples), seed=42)
+        self.assertEqual(
+            [row for row in result.ct_id_gate_rows if row["gate"] == "density_outlier"],
+            [],
+        )
 
     def test_ct_test_minimizes_defect_ratio_gap_after_axis_balance(self):
         ct_samples = []

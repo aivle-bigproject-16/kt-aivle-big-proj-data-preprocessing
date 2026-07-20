@@ -4,7 +4,7 @@ from pathlib import Path
 
 from PIL import Image
 
-from battery_v3_7.training_view import build_training_view
+from battery_v3_8.training_view import build_training_view
 
 
 class TrainingViewTests(unittest.TestCase):

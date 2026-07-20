@@ -65,7 +65,7 @@ try {
     $pyExe = $Python
     $argList = @()
     if ($PythonArgs) { $argList += $PythonArgs.Split(" ") }
-    $argList += @("-m", "battery_v3_7.cli", "dry-run",
+    $argList += @("-m", "battery_v3_8.cli", "dry-run",
                   "--raw-root", $RawRoot,
                   "--work-dir", $WorkDir,
                   "--seed", "$Seed",
