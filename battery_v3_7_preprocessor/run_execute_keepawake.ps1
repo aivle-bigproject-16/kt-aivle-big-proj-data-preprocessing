@@ -6,6 +6,9 @@
   사용:
     powershell -ExecutionPolicy Bypass -File .\run_execute_keepawake.ps1 `
       -RawRoot "..." -WorkDir "..." -Output "..." -Jobs 8
+
+  기본 인터프리터는 패키지 폴더의 .venv 이다. README 절차대로 venv를 먼저 만들어야 한다.
+  venv 없이 글로벌 런처로 돌리려면 -Python py -PythonArgs "-3.12 -X utf8" 을 지정한다.
 #>
 param(
     [Parameter(Mandatory = $true)] [string]$RawRoot,
@@ -13,8 +16,8 @@ param(
     [Parameter(Mandatory = $true)] [string]$Output,
     [int]$Seed = 42,
     [int]$Jobs = 8,
-    [string]$Python = "py",
-    [string]$PythonArgs = "-3.12 -X utf8",
+    [string]$Python = (Join-Path $PSScriptRoot ".venv\Scripts\python.exe"),
+    [string]$PythonArgs = "-X utf8",
     [switch]$KeepDisplay
 )
 $ErrorActionPreference = "Stop"

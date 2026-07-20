@@ -11,6 +11,8 @@
       -WorkDir "E:\battery_v3_work"
 
   주의:
+    * 기본 인터프리터는 패키지 폴더의 .venv 이다. README 절차대로 venv를 먼저 만들어야 한다.
+      venv 없이 글로벌 런처로 돌리려면 -Python py -PythonArgs "-3.12 -X utf8" 을 지정한다.
     * 노트북은 AC 전원 연결 필수(배터리면 정책상 잠들 수 있음).
     * 덮개(lid) 닫으면 SetThreadExecutionState로도 못 막는다 → 덮개 열어두거나
       제어판에서 "덮개를 닫을 때: 아무 것도 안 함"으로 설정.
@@ -22,8 +24,8 @@ param(
     [Parameter(Mandatory = $true)] [string]$WorkDir,
     [int]$Seed = 42,
     [int]$Jobs = 1,
-    [string]$Python = "py",
-    [string]$PythonArgs = "-3.12 -X utf8",
+    [string]$Python = (Join-Path $PSScriptRoot ".venv\Scripts\python.exe"),
+    [string]$PythonArgs = "-X utf8",
     [switch]$KeepDisplay
 )
 
@@ -63,7 +65,7 @@ try {
     $pyExe = $Python
     $argList = @()
     if ($PythonArgs) { $argList += $PythonArgs.Split(" ") }
-    $argList += @("-m", "battery_v3_3.cli", "dry-run",
+    $argList += @("-m", "battery_v3_7.cli", "dry-run",
                   "--raw-root", $RawRoot,
                   "--work-dir", $WorkDir,
                   "--seed", "$Seed",
