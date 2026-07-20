@@ -1,0 +1,139 @@
+﻿<#
+  run_pipeline.ps1
+  전처리 파이프라인의 단일 실행 진입점이다. 버전이 올라가도 수정 없이 동작한다.
+
+  ## 버전 비종속
+
+  모듈 이름을 하드코딩하지 않고 스크립트 폴더에서 `battery_v3_*` 패키지를 찾아
+  쓴다. v3.7에서 v3.8로 올릴 때 `run_dryrun_keepawake.ps1`이 v3.3 시절 모듈을
+  계속 부르다 실행 즉시 실패한 사고가 있었다. 폴더를 읽어 결정하면 그 종류의
+  사고가 재발하지 않는다.
+
+  ## 반드시 pwsh(PowerShell 7)로 실행한다
+
+  Windows PowerShell 5.1은 BOM 없는 UTF-8 파일을 ANSI로 읽는다. 이 저장소의
+  스크립트와 경로에는 한글이 들어가므로 5.1에서는 파싱 단계에서 깨진다.
+  아래 가드가 5.1 실행을 즉시 차단한다.
+
+  ## 장시간 실행은 반드시 분리(detached)한다
+
+  에이전트 세션의 자식 프로세스는 툴 호출이 끝나면 정리된다. dry-run과 execute는
+  30분에서 2시간이 걸리므로 부모 세션에 묶이면 조용히 사라진다. 아래 방식으로
+  독립 프로세스로 띄운다.
+
+      $args = @("-ExecutionPolicy","Bypass","-NonInteractive","-File","<이 파일의 전체 경로>",
+                "-Stage","dry-run","-RawRoot","<raw>","-WorkDir","<work>")
+      Start-Process pwsh -ArgumentList $args -WindowStyle Hidden
+
+  경로에 공백이 있으면 `-File` 인자가 잘린다. 이 저장소의 상위 폴더 이름에
+  공백이 있어 실제로 잘린 적이 있으므로, 인자는 위처럼 배열로 넘긴다.
+
+  ## 진행 상황 확인
+
+  단계마다 `<WorkDir>\pipeline.status`에 시작과 종료를 기록한다. 마지막 줄이
+  `finished ... exit=0`이면 정상 완료다.
+
+  ## 사용 예
+
+      pwsh -File .\run_pipeline.ps1 -Stage dry-run -RawRoot "..." -WorkDir "..."
+      pwsh -File .\run_pipeline.ps1 -Stage approve -WorkDir "..." -ApprovedBy "홍길동"
+      pwsh -File .\run_pipeline.ps1 -Stage execute -RawRoot "..." -WorkDir "..." -Output "..."
+#>
+param(
+    [ValidateSet("dry-run", "approve", "execute")]
+    [Parameter(Mandatory = $true)] [string]$Stage,
+    [string]$RawRoot,
+    [string]$WorkDir,
+    [string]$Output,
+    [string]$ApprovedBy,
+    [int]$Seed = 42,
+    [int]$Jobs = 8,
+    [switch]$KeepDisplay
+)
+
+$ErrorActionPreference = "Stop"
+
+if ($PSVersionTable.PSVersion.Major -lt 7) {
+    Write-Error "pwsh(PowerShell 7) 필요. Windows PowerShell 5.1은 BOM 없는 UTF-8 한글을 깨뜨린다."
+    exit 2
+}
+
+Set-Location -Path $PSScriptRoot
+
+$package = Get-ChildItem -Path $PSScriptRoot -Directory -Filter "battery_v3_*" |
+    Where-Object { Test-Path (Join-Path $_.FullName "cli.py") } |
+    Sort-Object Name -Descending |
+    Select-Object -First 1
+if (-not $package) {
+    Write-Error "battery_v3_* 패키지를 $PSScriptRoot 에서 찾지 못했다."
+    exit 2
+}
+$module = $package.Name
+
+$python = Join-Path $PSScriptRoot ".venv\Scripts\python.exe"
+if (-not (Test-Path $python)) {
+    Write-Error "가상환경이 없다. README의 설치 절차를 먼저 수행한다: $python"
+    exit 2
+}
+
+if (-not $WorkDir) { Write-Error "-WorkDir 는 모든 단계에서 필요하다."; exit 2 }
+New-Item -ItemType Directory -Force -Path $WorkDir | Out-Null
+$logDir = Join-Path $WorkDir "logs"
+New-Item -ItemType Directory -Force -Path $logDir | Out-Null
+$stamp = Get-Date -Format "yyyyMMdd_HHmmss"
+$log = Join-Path $logDir "$($Stage -replace '-', '')_$stamp.log"
+$status = Join-Path $WorkDir "pipeline.status"
+
+switch ($Stage) {
+    "dry-run" {
+        if (-not $RawRoot) { Write-Error "-RawRoot 필요"; exit 2 }
+        $cliArgs = @("dry-run", "--raw-root", $RawRoot, "--work-dir", $WorkDir, "--seed", "$Seed", "--jobs", "$Jobs")
+    }
+    "approve" {
+        if (-not $ApprovedBy) { Write-Error "-ApprovedBy 필요"; exit 2 }
+        $cliArgs = @("approve-selection", "--work-dir", $WorkDir, "--approved-by", $ApprovedBy, "--seed", "$Seed")
+    }
+    "execute" {
+        if (-not $RawRoot -or -not $Output) { Write-Error "-RawRoot 와 -Output 필요"; exit 2 }
+        $cliArgs = @("execute", "--raw-root", $RawRoot, "--work-dir", $WorkDir, "--output", $Output, "--seed", "$Seed", "--jobs", "$Jobs")
+    }
+}
+
+Add-Type -Namespace Win32 -Name PipelinePower -MemberDefinition @'
+[System.Runtime.InteropServices.DllImport("kernel32.dll", SetLastError = true)]
+public static extern uint SetThreadExecutionState(uint esFlags);
+'@
+$ES_CONTINUOUS       = [uint32]2147483648
+$ES_SYSTEM_REQUIRED  = [uint32]1
+$ES_DISPLAY_REQUIRED = [uint32]2
+$flags = $ES_CONTINUOUS -bor $ES_SYSTEM_REQUIRED
+if ($KeepDisplay) { $flags = $flags -bor $ES_DISPLAY_REQUIRED }
+
+$start = Get-Date
+"started $Stage $($start.ToString('yyyy-MM-dd HH:mm:ss')) module=$module pid=$PID" | Add-Content -Path $status
+"[run_pipeline] $Stage / module $module / jobs $Jobs / seed $Seed" | Tee-Object -FilePath $log -Append
+
+$exit = 1
+try {
+    [Win32.PipelinePower]::SetThreadExecutionState($flags) | Out-Null
+    & $python -X utf8 -u -m "$module.cli" @cliArgs *>&1 | Tee-Object -FilePath $log -Append
+    $exit = $LASTEXITCODE
+}
+catch {
+    $_ | Out-String | Tee-Object -FilePath $log -Append
+    $exit = 1
+}
+finally {
+    [Win32.PipelinePower]::SetThreadExecutionState($ES_CONTINUOUS) | Out-Null
+    $end = Get-Date
+    $duration = $end - $start
+    "finished $Stage $($end.ToString('yyyy-MM-dd HH:mm:ss')) elapsed=$($duration.ToString('hh\:mm\:ss')) exit=$exit" |
+        Add-Content -Path $status
+}
+
+if ($exit -ne 0) {
+    Write-Host "$Stage 실패 (exit=$exit). 로그: $log" -ForegroundColor Red
+    exit $exit
+}
+Write-Host "$Stage 완료. 로그: $log" -ForegroundColor Green
+exit 0
