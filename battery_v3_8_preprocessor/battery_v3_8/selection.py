@@ -33,6 +33,24 @@ CT_ID_GATE_EXCLUSION_REASON = "ct_id_gate_excluded"
 CT_TEST_TARGET = 7
 CT_FOLDS = 5
 
+# CT Test 선정 목적함수 가중치.
+# v3.8 초기 구현은 (축 최대격차, 축 합격차, defect 격차, 밀도 격차, 면적 격차)를
+# 사전식 튜플로 비교했다. 앞 항목이 실수값이라 동점이 거의 없어 밀도 격차까지
+# 비교가 내려오지 않았고, 밀도 상위 ID가 그대로 Test에 몰려 Test/development
+# 밀도비가 2.78배가 됐다. 가중 합으로 바꾸어 모든 축이 실제로 경쟁하게 한다.
+CT_TEST_WEIGHTS = {
+    "axis_max": 3.0,
+    "axis_sum": 1.0,
+    "defect": 6.0,
+    "density": 6.0,
+    "area": 1.0,
+}
+
+# fold 배정 목적함수에서 annotations_per_image 항의 가중치.
+# 이 값이 낮으면 이미지 장수와 defect 비율에 밀려 밀도 편차가 게이트 경계까지
+# 올라간다. 초기값 4.0에서는 최악 fold가 +19.20%로 여유가 0.80%p뿐이었다.
+CT_FOLD_DENSITY_WEIGHT = 4.0
+
 
 def ct_split_structure(id_count: int) -> tuple[int, int]:
     """Return (ids_per_fold, test_id_count) for the surviving CT ID count.
@@ -230,7 +248,7 @@ def _density_gap(test: list[IdStats], development: list[IdStats]) -> float:
     return abs(test_density / development_density - 1)
 
 
-def _ct_test_objective(test: list[IdStats], development: list[IdStats]) -> tuple[float, float, float, float, float]:
+def _ct_test_objective(test: list[IdStats], development: list[IdStats]) -> float:
     test_axes = _ct_axis_ratios(test)
     development_axes = _ct_axis_ratios(development)
     gaps = [abs(test_ratio - development_ratio) for test_ratio, development_ratio in zip(test_axes, development_axes)]
@@ -243,12 +261,16 @@ def _ct_test_objective(test: list[IdStats], development: list[IdStats]) -> tuple
         test_ratio = test_area[f"area:{area_bin}"] / test_total if test_total else 0.0
         development_ratio = development_area[f"area:{area_bin}"] / development_total if development_total else 0.0
         area_gaps.append(abs(test_ratio - development_ratio))
+    test_ratio = _pooled_ratio(test)
+    development_ratio = _pooled_ratio(development)
+    defect_gap = abs(test_ratio / development_ratio - 1) if development_ratio > 0 else abs(test_ratio)
+    weights = CT_TEST_WEIGHTS
     return (
-        max(gaps),
-        sum(gaps),
-        abs(_pooled_ratio(test) - _pooled_ratio(development)),
-        _density_gap(test, development),
-        max(area_gaps, default=0.0),
+        weights["axis_max"] * max(gaps)
+        + weights["axis_sum"] * sum(gaps)
+        + weights["defect"] * defect_gap
+        + weights["density"] * _density_gap(test, development)
+        + weights["area"] * max(area_gaps, default=0.0)
     )
 
 
@@ -342,7 +364,7 @@ def _select_ct_test(ct_ids: list[IdStats], seed: int, locked: set[str] | None) -
         while True:
             development = [stats for stats in ct_ids if stats not in test]
             before = _ct_test_objective(test, development)
-            best: tuple[tuple[float, float, float, float, float], bytes, str, str, IdStats, IdStats] | None = None
+            best: tuple[float, bytes, str, str, IdStats, IdStats] | None = None
             for test_id in sorted(test, key=lambda stats: natural_id_key(stats.battery_id)):
                 for development_id in sorted(development, key=lambda stats: natural_id_key(stats.battery_id)):
                     proposed_test = [stats for stats in test if stats is not test_id] + [development_id]
@@ -412,7 +434,7 @@ def _ct_fold_assignment(development: list[IdStats], seed: int) -> dict[int, list
         score = 0.0
         score += 12.0 * ((image_count - len(target_samples) / CT_FOLDS) / max(len(target_samples) / CT_FOLDS, 1)) ** 2
         score += 8.0 * ((defect_ratio - target_metrics.defect_image_ratio) / max(target_metrics.defect_image_ratio, 0.01)) ** 2
-        score += 4.0 * ((annotations_per_image - target_metrics.annotations_per_image) / max(target_metrics.annotations_per_image, 0.01)) ** 2
+        score += CT_FOLD_DENSITY_WEIGHT * ((annotations_per_image - target_metrics.annotations_per_image) / max(target_metrics.annotations_per_image, 0.01)) ** 2
         for feature, total in total_features.items():
             wanted = total / CT_FOLDS
             if feature == "images":
@@ -467,6 +489,7 @@ def _swap_density(
     locked_groups: set[str] | None = None,
     selected_for: Callable[[str, IdStats], list[Sample]] | None = None,
     dynamic_target: bool = False,
+    enforce_stratum: bool = True,
 ) -> None:
     locked_groups = locked_groups or set()
     selected_for = selected_for or (lambda _name, stats: stats.selected_samples)
@@ -504,7 +527,7 @@ def _swap_density(
             for right_name in names[left_index + 1 :]:
                 for left in sorted(groups[left_name], key=lambda stats: natural_id_key(stats.battery_id)):
                     for right in sorted(groups[right_name], key=lambda stats: natural_id_key(stats.battery_id)):
-                        if stratum(left) != stratum(right):
+                        if enforce_stratum and stratum(left) != stratum(right):
                             continue
                         proposal = {name: list(members) for name, members in groups.items()}
                         proposal[left_name].remove(left)
@@ -605,6 +628,33 @@ def _check_ct_area_balance(groups: dict[str, list[IdStats]]) -> list[str]:
     return warnings
 
 
+def build_ct_folds(development: list[IdStats], seed: int) -> tuple[dict[str, list[IdStats]], float]:
+    """Assign CT development IDs to folds and rebalance annotation density.
+
+    The whole CT fold procedure lives here so that the pipeline and any offline
+    verification exercise identical settings. Keeping the swap configuration at
+    the call site once caused a verification harness to measure the stratum
+    constrained behaviour while the pipeline ran without it.
+
+    The stratum constraint is not applied to CT. A dense ID in a sparsely
+    populated stratum has no eligible partner, so the swap cannot reduce the
+    deviation at all; measured on the v3.8 population the worst fold moved from
+    +26.93% (gate failure) to +13.39% once the constraint was lifted. Defect
+    balance stays protected by the ratio_spread guard inside the swap, which
+    moved only from 0.0406 to 0.0426 in the same measurement.
+    """
+    folds = _ct_fold_assignment(development, seed)
+    fold_groups = {str(index): members for index, members in folds.items()}
+    ct_target = sample_metrics(collect_selected_samples(development)).annotations_per_image
+    _swap_density(
+        fold_groups,
+        lambda stats: round(_id_selected_ratio(stats) * 10),
+        ct_target,
+        enforce_stratum=False,
+    )
+    return fold_groups, ct_target
+
+
 def assign_dataset(
     valid_samples: list[Sample],
     seed: int = 42,
@@ -632,10 +682,7 @@ def assign_dataset(
     for stats in ct_test:
         stats.selected_samples = list(stats.samples)
         stats.split_role = "test"
-    folds = _ct_fold_assignment(development, seed)
-    ct_target = sample_metrics(collect_selected_samples(development)).annotations_per_image
-    fold_groups = {str(index): members for index, members in folds.items()}
-    _swap_density(fold_groups, lambda stats: round(_id_selected_ratio(stats) * 10), ct_target)
+    fold_groups, ct_target = build_ct_folds(development, seed)
     warnings = _check_density(fold_groups, ct_target, set(fold_groups), "CT_fold")
     review_warnings = _check_ct_area_balance(fold_groups)
     for fold, members in fold_groups.items():
