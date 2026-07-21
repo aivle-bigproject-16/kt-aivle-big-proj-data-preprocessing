@@ -2,9 +2,9 @@ import unittest
 from collections import Counter
 from unittest import mock
 
-from battery_v3_8 import selection as sel
-from battery_v3_8.models import IdStats, Sample
-from battery_v3_8.selection import assign_dataset
+from battery_v3_9 import selection as sel
+from battery_v3_9.models import IdStats, Sample
+from battery_v3_9.selection import assign_dataset
 
 
 def sample(sample_id: str, modality: str, battery_id: str, axis: str, defect: bool) -> Sample:
@@ -144,7 +144,7 @@ class SelectionTests(unittest.TestCase):
         self.assertNotIn(excluded, result.selected_samples)
 
     def test_ct_id_losing_every_image_is_dropped_and_structure_adapts(self):
-        """v3.8 sizes the split from the surviving IDs instead of demanding 47.
+        """v3.9 sizes the split from the surviving IDs instead of demanding 47.
 
         An ID whose images are all excluded by the image rule is removed by the
         contamination gate, and the remaining 46 IDs form five folds of seven
@@ -203,7 +203,7 @@ class SelectionTests(unittest.TestCase):
 
 
 class CtBalanceWiringTests(unittest.TestCase):
-    """Guard the CT balance behaviour that a v3.8 dry-run had to uncover twice.
+    """Guard the CT balance behaviour that a v3.9 dry-run had to uncover twice.
 
     Every assertion here failed silently before: the suite passed while the
     pipeline produced a fold deviation at the gate boundary and a Test split
@@ -245,14 +245,14 @@ class CtBalanceWiringTests(unittest.TestCase):
 
     @staticmethod
     def _worst(groups, target):
-        from battery_v3_8.metrics import sample_metrics, selected_samples as collect
+        from battery_v3_9.metrics import sample_metrics, selected_samples as collect
         return max(
             abs(sample_metrics(collect(members, name, None)).annotations_per_image / target - 1)
             for name, members in groups.items()
         )
 
     def test_lifting_the_stratum_constraint_lets_the_swap_reduce_density_spread(self):
-        from battery_v3_8.metrics import sample_metrics, selected_samples as collect
+        from battery_v3_9.metrics import sample_metrics, selected_samples as collect
 
         stratum = lambda stats: round(sel._id_selected_ratio(stats) * 10)
         constrained = self._groups()

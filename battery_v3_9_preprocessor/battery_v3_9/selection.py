@@ -20,7 +20,7 @@ from .parsing import choose_application
 EPSILON = 1e-12
 MAX_SWAP_ROUNDS = 12
 
-# v3.8 CT ID 게이트.
+# v3.9 CT ID 게이트.
 # Gate 1은 이미지 다수가 대형 공동인 ID를 통째로 제외한다. 이미지 단위 제외만
 # 적용하면 그런 ID는 원본의 11~22%만 남아 다른 ID와 같은 자격으로 fold에 들어갈 수
 # 없다. Gate 2는 annotation 밀도가 사분위 범위를 크게 벗어난 ID를 제외한다.
@@ -34,16 +34,23 @@ CT_TEST_TARGET = 7
 CT_FOLDS = 5
 
 # CT Test 선정 목적함수 가중치.
-# v3.8 초기 구현은 (축 최대격차, 축 합격차, defect 격차, 밀도 격차, 면적 격차)를
-# 사전식 튜플로 비교했다. 앞 항목이 실수값이라 동점이 거의 없어 밀도 격차까지
-# 비교가 내려오지 않았고, 밀도 상위 ID가 그대로 Test에 몰려 Test/development
-# 밀도비가 2.78배가 됐다. 가중 합으로 바꾸어 모든 축이 실제로 경쟁하게 한다.
+# v3.8은 이 항목들을 사전식 튜플로 비교했다. 앞 항목이 실수값이라 동점이 거의 없어
+# 밀도 격차까지 비교가 내려오지 않았고, 밀도 상위 ID가 그대로 Test에 몰려
+# Test/development 밀도비가 2.78배가 됐다. 가중 합으로 바꾸어 모든 축이 실제로
+# 경쟁하게 했다(§26.12).
+#
+# v3.9는 area 가중치를 1에서 20으로 올렸다. 1~15에서는 면적 항이 밀도(가중치 6)에
+# 밀려 porosity 면적 구간이 Test에서 층화되지 않았고, 특히 1~5% 크기 기공이 Test에
+# 한 장도 들어가지 않았다(§26.13). 이 크기 구간이 밀도 상위 ID에 몰려 있어 밀도 균형과
+# 정면으로 충돌하기 때문이다. 20으로 올리면 저밀도이면서 이 구간을 가진 ID 120이 Test로
+# 들어와 면적 최대격차가 0.096에서 0.038로 줄고, fold 최악 편차도 +13.39%에서 +8.36%로
+# 함께 개선된다. 30 이상에서는 밀도/fold가 무너지므로 18~25 안정 구간의 중앙을 택했다.
 CT_TEST_WEIGHTS = {
     "axis_max": 3.0,
     "axis_sum": 1.0,
     "defect": 6.0,
     "density": 6.0,
-    "area": 1.0,
+    "area": 20.0,
 }
 
 # fold 배정 목적함수에서 annotations_per_image 항의 가중치.
@@ -96,7 +103,7 @@ def _id_stats(samples: Iterable[Sample]) -> list[IdStats]:
 
 
 def apply_pre_split_policy(valid_samples: Iterable[Sample]) -> list[Sample]:
-    """Apply v3.8 policy exclusions before ID statistics and stratification.
+    """Apply v3.9 policy exclusions before ID statistics and stratification.
 
     Excluded samples stay on the scanned Sample objects for lineage/reporting,
     but are absent from the returned split population.  This function is
@@ -638,7 +645,7 @@ def build_ct_folds(development: list[IdStats], seed: int) -> tuple[dict[str, lis
 
     The stratum constraint is not applied to CT. A dense ID in a sparsely
     populated stratum has no eligible partner, so the swap cannot reduce the
-    deviation at all; measured on the v3.8 population the worst fold moved from
+    deviation at all; measured on the v3.9 population the worst fold moved from
     +26.93% (gate failure) to +13.39% once the constraint was lifted. Defect
     balance stays protected by the ratio_spread guard inside the swap, which
     moved only from 0.0406 to 0.0426 in the same measurement.

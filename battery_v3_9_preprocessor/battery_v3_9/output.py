@@ -154,18 +154,18 @@ def write_dataset(root: Path, selection: SelectionResult, jobs: int = 1) -> None
     _write_samples(root, selection, jobs)
     _write_membership(root, selection)
     _verify_output(root, selection)
-    _write_text(root / "README.md", "# Battery v3.8 dataset\n\nTest data is for final evaluation only. Do not use it for training or model selection.\n")
+    _write_text(root / "README.md", "# Battery v3.9 dataset\n\nTest data is for final evaluation only. Do not use it for training or model selection.\n")
     _write_text(root / "requirements.lock", "Pillow==12.2.0\nshapely==2.1.2\n")
     source_package = Path(__file__).resolve().parent
     shutil.copytree(
         source_package,
-        root / "battery_v3_8",
+        root / "battery_v3_9",
         ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
     )
     wrapper = (
         "from pathlib import Path\n"
-        "from battery_v3_8.training_view import build_training_view\n"
-        "from battery_v3_8.cli import training_view_main\n\n"
+        "from battery_v3_9.training_view import build_training_view\n"
+        "from battery_v3_9.cli import training_view_main\n\n"
         "if __name__ == '__main__':\n"
         "    training_view_main(Path(__file__).resolve().parent)\n"
     )

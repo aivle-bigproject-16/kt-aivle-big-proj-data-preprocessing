@@ -84,7 +84,7 @@ def quality_exception_rows(warnings: Iterable[str]) -> list[dict[str, str]]:
         elif "det/seg gate" in warning:
             code, threshold = "det_seg_distribution", "seg_exclusion<=0.07;ratio_diff<=0.03"
         else:
-            code, threshold = "quality_gate", "plan_v3.8"
+            code, threshold = "quality_gate", "plan_v3.9"
         canonical = json.dumps(
             {"warning_code": code, "observed_value": warning, "threshold": threshold},
             ensure_ascii=False,
@@ -599,7 +599,7 @@ def _eda_markdown(scan: ScanResult, selection: SelectionResult, warnings: list[s
     issue_rows = [[f"json:{issue}", count] for issue, count in sorted(anomaly_counts.items())]
     issue_rows += [[f"polygon:{issue}", count] for issue, count in sorted(polygon_counts.items())]
     return (
-        "# v3.8 post-crop EDA (dry-run estimate)\n\n"
+        "# v3.9 post-crop EDA (dry-run estimate)\n\n"
         "`execute` 전에는 CT crop 결과를 쓰지 않으므로 픽셀 통계가 아닌 확정 ROI/YOLO 변환 결과를 집계한다.\n\n"
         "## Dataset summary\n\n"
         + _markdown_table(["dataset", "IDs", "det images", "seg images", "defect ratio", "ann/image", "normal ratio", "x/y/z"], summary_rows)
@@ -687,7 +687,7 @@ def write_reports(scan: ScanResult, selection: SelectionResult, report_dir: Path
     raw_ids = {modality: len({battery_id for current_modality, battery_id in scan.raw_image_counts if current_modality == modality}) for modality in ("CT", "EXT")}
     valid_ids = {modality: len({sample.battery_id for sample in scan.valid_samples if sample.modality == modality}) for modality in ("CT", "EXT")}
     (report_dir / "scan_summary.md").write_text(
-        "# v3.8 dry-run scan summary\n\n"
+        "# v3.9 dry-run scan summary\n\n"
         f"- Raw fingerprint: `{scan.raw_fingerprint}`\n"
         f"- Scanned matched samples: CT {modality_counts['CT']:,}, EXT {modality_counts['EXT']:,}\n"
         f"- Valid detection samples: CT {valid_counts['CT']:,}, EXT {valid_counts['EXT']:,}\n"

@@ -1,12 +1,12 @@
 import unittest
 
-from battery_v3_8.metrics import (
+from battery_v3_9.metrics import (
     group_selected_samples,
     sample_metrics,
     selected_samples,
     split_fold_group_name,
 )
-from battery_v3_8.models import IdStats, Sample
+from battery_v3_9.models import IdStats, Sample
 
 
 class MetricTests(unittest.TestCase):

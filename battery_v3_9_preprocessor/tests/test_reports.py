@@ -3,10 +3,10 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from battery_v3_8.models import IdStats, Sample
-from battery_v3_8.reports import write_reports
-from battery_v3_8.scan import ScanResult
-from battery_v3_8.selection import SelectionResult
+from battery_v3_9.models import IdStats, Sample
+from battery_v3_9.reports import write_reports
+from battery_v3_9.scan import ScanResult
+from battery_v3_9.selection import SelectionResult
 
 
 class ReportTests(unittest.TestCase):
