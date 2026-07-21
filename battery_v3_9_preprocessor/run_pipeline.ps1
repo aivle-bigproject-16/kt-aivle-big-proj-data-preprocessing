@@ -148,6 +148,24 @@ sys.exit(0)" $path 2>$null | Out-Null
 }
 
 function Invoke-Upload {
+    # 순서: reports/·소스·루트 → CT zip → RGB(EXT) zip.
+    # reports 는 게이트 근거와 감사 기록이라 가장 먼저 올려 팀이 선정 결과를 바로
+    # 검토할 수 있게 한다(약 259MB). CT(약 18GB)가 EXT(약 71GB)보다 작으므로 CT 를
+    # 먼저 올려 작은 산출물부터 공유된다. ZIP_ORDER 는 이미 CT 가 EXT 앞이다.
+    #
+    # 부가 산출물에 --exclude "*.zip" 을 쓰지 않는 이유: 그 옵션은 zip 만 뺄 뿐
+    # CT/ 와 EXT/ 원본 폴더로 재귀해 zip 안에 이미 든 40만 장(약 91GB)을 통째로
+    # 재업로드한다. 그래서 필요한 항목만 명시적으로 지정한다.
+    "[upload] 1/2 부가 산출물 (reports/·소스·루트 파일)" | Tee-Object -FilePath $log -Append
+    & rclone copy $Output $Remote `
+        --include "reports/**" --include "battery_v3_*/**" `
+        --include "README.md" --include "requirements.lock" --include "prepare_training_view.py" `
+        --transfers 8 --retries 5 --stats 30s --stats-one-line `
+        --log-level INFO --log-file $log
+    if ($LASTEXITCODE -ne 0) { return $LASTEXITCODE }
+    "[upload] 부가 산출물 완료" | Tee-Object -FilePath $log -Append
+
+    "[upload] 2/2 데이터셋 zip (CT -> EXT)" | Tee-Object -FilePath $log -Append
     foreach ($name in $ZIP_ORDER) {
         $path = Join-Path $Output $name
         if (-not (Test-Path $path)) {
@@ -169,16 +187,6 @@ function Invoke-Upload {
         if ($LASTEXITCODE -ne 0) { return $LASTEXITCODE }
         "[upload] 완료: $name" | Tee-Object -FilePath $log -Append
     }
-    # 부가 산출물만 올린다: reports/, 소스 스냅샷 battery_v3_*/, 그리고 루트의
-    # README/lock/스크립트. --exclude "*.zip" 는 zip 만 뺄 뿐 CT/ 와 EXT/ 원본
-    # 폴더로 재귀해 zip 안에 이미 든 40만 장(약 91GB)을 통째로 재업로드한다.
-    # 그래서 필요한 항목만 명시적으로 지정한다.
-    "[upload] 부가 산출물 (reports/·소스·루트 파일만)" | Tee-Object -FilePath $log -Append
-    & rclone copy $Output $Remote `
-        --include "reports/**" --include "battery_v3_*/**" `
-        --include "README.md" --include "requirements.lock" --include "prepare_training_view.py" `
-        --transfers 8 --retries 5 --stats 30s --stats-one-line `
-        --log-level INFO --log-file $log
     return $LASTEXITCODE
 }
 
