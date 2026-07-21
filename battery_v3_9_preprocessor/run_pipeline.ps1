@@ -5,7 +5,7 @@
   ## 버전 비종속
 
   모듈 이름을 하드코딩하지 않고 스크립트 폴더에서 `battery_v3_*` 패키지를 찾아
-  쓴다. v3.7에서 v3.9로 올릴 때 `run_dryrun_keepawake.ps1`이 v3.3 시절 모듈을
+  쓴다. v3.6에서 v3.7로 올릴 때 `run_dryrun_keepawake.ps1`이 v3.3 시절 모듈을
   계속 부르다 실행 즉시 실패한 사고가 있었다. 폴더를 읽어 결정하면 그 종류의
   사고가 재발하지 않는다.
 
@@ -18,15 +18,13 @@
   ## 장시간 실행은 반드시 분리(detached)한다
 
   에이전트 세션의 자식 프로세스는 툴 호출이 끝나면 정리된다. dry-run과 execute는
-  30분에서 2시간이 걸리므로 부모 세션에 묶이면 조용히 사라진다. 아래 방식으로
-  독립 프로세스로 띄운다.
+  30분에서 2시간이 걸리므로 부모 세션에 묶이면 조용히 사라진다. `-Detached` 를
+  붙이면 스크립트가 스스로를 독립 프로세스로 다시 띄우고 PID 만 남기고 반환한다.
 
-      $args = @("-ExecutionPolicy","Bypass","-NonInteractive","-File","<이 파일의 전체 경로>",
-                "-Stage","dry-run","-RawRoot","<raw>","-WorkDir","<work>")
-      Start-Process pwsh -ArgumentList $args -WindowStyle Hidden
-
-  경로에 공백이 있으면 `-File` 인자가 잘린다. 이 저장소의 상위 폴더 이름에
-  공백이 있어 실제로 잘린 적이 있으므로, 인자는 위처럼 배열로 넘긴다.
+  경로에 공백이 있으면 `-File` 인자가 잘린다. `Start-Process -ArgumentList` 는
+  배열 원소가 공백을 포함해도 인용하지 않고 공백으로 이어 붙이므로, 위 재실행
+  로직은 공백을 가질 수 있는 값을 모두 이중 인용해서 넘긴다. "배열로 넘기면
+  안전하다"는 믿음으로 인용을 생략했다가 실제로 잘린 적이 있다.
 
   ## 진행 상황 확인
 
@@ -35,9 +33,10 @@
 
   ## 사용 예
 
-      pwsh -File .\run_pipeline.ps1 -Stage dry-run -RawRoot "..." -WorkDir "..."
+      pwsh -File .\run_pipeline.ps1 -Stage dry-run -RawRoot "..." -WorkDir "..." -Detached
       pwsh -File .\run_pipeline.ps1 -Stage approve -WorkDir "..." -ApprovedBy "홍길동"
-      pwsh -File .\run_pipeline.ps1 -Stage execute -RawRoot "..." -WorkDir "..." -Output "..."
+      pwsh -File .\run_pipeline.ps1 -Stage execute -RawRoot "..." -WorkDir "..." -Output "..." -Detached
+      pwsh -File .\run_pipeline.ps1 -Stage upload  -WorkDir "..." -Output "..." -Remote "gdrive:..." -Detached
 #>
 param(
     [ValidateSet("dry-run", "approve", "execute", "upload")]
@@ -58,13 +57,17 @@ $ErrorActionPreference = "Stop"
 # Long stages must not be children of the calling session: an agent session
 # reaps its children when a tool call ends, which killed two dry-runs after
 # roughly 35 minutes each with no log to explain it. Relaunch detached instead.
-# Arguments go through as an array because a space in the path truncated
-# -File once already.
+#
+# Start-Process -ArgumentList does NOT quote array elements that contain spaces:
+# it joins them with a single space, so a path like "...\Between Laptop\..." gets
+# split and -File sees only "...\Between". Every value that can contain a space
+# must therefore be wrapped in double quotes here before it is handed over.
 if ($Detached) {
-    $forward = @("-ExecutionPolicy", "Bypass", "-NonInteractive", "-File", $PSCommandPath, "-Stage", $Stage)
+    function Quote([string]$value) { '"' + $value + '"' }
+    $forward = @("-ExecutionPolicy", "Bypass", "-NonInteractive", "-File", (Quote $PSCommandPath), "-Stage", $Stage)
     foreach ($name in @("RawRoot", "WorkDir", "Output", "Remote", "ApprovedBy")) {
         $value = Get-Variable -Name $name -ValueOnly -ErrorAction SilentlyContinue
-        if ($value) { $forward += @("-$name", $value) }
+        if ($value) { $forward += @("-$name", (Quote $value)) }
     }
     $forward += @("-Seed", "$Seed", "-Jobs", "$Jobs")
     if ($KeepDisplay) { $forward += "-KeepDisplay" }
