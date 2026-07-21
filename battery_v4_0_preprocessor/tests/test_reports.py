@@ -3,10 +3,10 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from battery_v3_9.models import IdStats, Sample
-from battery_v3_9.reports import write_reports
-from battery_v3_9.scan import ScanResult
-from battery_v3_9.selection import SelectionResult
+from battery_v4_0.models import IdStats, Sample
+from battery_v4_0.reports import write_reports
+from battery_v4_0.scan import ScanResult
+from battery_v4_0.selection import SelectionResult
 
 
 class ReportTests(unittest.TestCase):
@@ -116,6 +116,50 @@ class ReportTests(unittest.TestCase):
 
             scan_summary = (report_dir / "scan_summary.md").read_text(encoding="utf-8")
             self.assertIn("JSON anomalies: 2", scan_summary)
+
+    def test_ct_positive_rate_stratification_report_and_bin_column(self):
+        # 양성률 구간을 넘나드는 CT ID 7개: test 2, development 5 형태를 흉내낸다.
+        rates = [("1", 0.0, "test"), ("2", 0.0, "development"), ("3", 0.15, "test"),
+                 ("4", 0.15, "development"), ("5", 0.45, "development"),
+                 ("6", 0.70, "development"), ("7", 0.70, "development")]
+        ids = []
+        all_samples = []
+        for bid, ratio, role in rates:
+            n_def = round(100 * ratio)
+            samples = [
+                Sample(sample_id=f"CT_{bid}_x_{i}", modality="CT", battery_id=bid, axis="x",
+                       included_det=True, included_seg=True,
+                       det_lines=["0 0.5 0.5 0.1 0.1"] if i < n_def else [],
+                       selected=True, split_role=role, fold_id="", pixel_hash=f"{bid}-{i}")
+                for i in range(100)
+            ]
+            all_samples.extend(samples)
+            st = IdStats("CT", bid, "산업", samples, samples, role, "")
+            ids.append(st)
+        selection = SelectionResult(ids, ct_test_positive_rate_quotas={"zero": 1, "very_low": 0, "low_mid": 1, "mid_high": 0, "very_high": 0})
+        with tempfile.TemporaryDirectory() as tmp:
+            report_dir = Path(tmp)
+            write_reports(ScanResult(raw_root=Path("."), samples=all_samples), selection, report_dir)
+
+            with (report_dir / "ct_id_positive_rate_stratification.csv").open(encoding="utf-8-sig", newline="") as s:
+                rows = list(csv.DictReader(s))
+            overall = [r for r in rows if r["scope"] == "overall"]
+            self.assertEqual([r["positive_rate_bin"] for r in overall],
+                             ["zero", "very_low", "low_mid", "mid_high", "very_high"])
+            zero_row = next(r for r in overall if r["positive_rate_bin"] == "zero")
+            self.assertEqual(zero_row["actual_test_id_count"], "1")
+            self.assertEqual(zero_row["status"], "PASS")
+
+            with (report_dir / "selected_battery_ids_candidate.csv").open(encoding="utf-8-sig", newline="") as s:
+                sel_rows = list(csv.DictReader(s))
+            self.assertIn("ct_id_positive_rate_bin", sel_rows[0])
+            by_id = {r["battery_id"]: r["ct_id_positive_rate_bin"] for r in sel_rows}
+            self.assertEqual(by_id["1"], "zero")
+            self.assertEqual(by_id["6"], "very_high")
+
+            eda = (report_dir / "eda_v3_postcrop.md").read_text(encoding="utf-8")
+            self.assertIn("CT ID positive-rate stratification", eda)
+            self.assertIn("image-micro", eda)
 
     def test_reports_ct_test_and_development_axis_balance(self):
         development_sample = Sample(

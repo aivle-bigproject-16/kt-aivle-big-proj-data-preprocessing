@@ -3,8 +3,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from battery_v3_9.pipeline import approve_selection, execute
-from battery_v3_9.reports import CSV_SCHEMAS, quality_exception_rows, write_csv
+from battery_v4_0.pipeline import approve_selection, execute
+from battery_v4_0.reports import CSV_SCHEMAS, quality_exception_rows, write_csv
 
 
 class PipelineTests(unittest.TestCase):
@@ -18,6 +18,12 @@ class PipelineTests(unittest.TestCase):
         write_csv(reports / "review_warnings.csv", CSV_SCHEMAS["review_warnings.csv"], [{"warning": "review only", "reviewer": "", "reviewed_at": "", "status": "pending"}])
         rows = quality_exception_rows([warning] if warning else [])
         write_csv(reports / "quality_exceptions.csv", CSV_SCHEMAS["quality_exceptions.csv"], rows)
+        strat = [
+            {"scope": "overall", "positive_rate_bin": name, "candidate_id_count": 0,
+             "target_test_id_count": 0, "actual_test_id_count": 0, "development_id_count": 0, "status": "PASS"}
+            for name in ("zero", "very_low", "low_mid", "mid_high", "very_high")
+        ]
+        write_csv(reports / "ct_id_positive_rate_stratification.csv", CSV_SCHEMAS["ct_id_positive_rate_stratification.csv"], strat)
         (reports / "raw_fingerprint.sha256").write_text("abc\n", encoding="ascii")
 
     def test_approval_records_v37_pre_split_policy(self):
@@ -42,7 +48,7 @@ class PipelineTests(unittest.TestCase):
             )
             self.assertEqual(
                 set(approval["artifact_sha256"]),
-                {"selected_battery_ids.csv", "test_battery_ids.csv", "review_warnings.csv", "quality_exceptions.csv"},
+                {"selected_battery_ids.csv", "test_battery_ids.csv", "review_warnings.csv", "quality_exceptions.csv", "ct_id_positive_rate_stratification.csv"},
             )
             self.assertEqual(len(approval["id_statistics_fingerprint"]), 64)
 

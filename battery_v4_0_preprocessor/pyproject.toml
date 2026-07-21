@@ -3,7 +3,7 @@ requires = ["setuptools>=75"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "battery-v3.9-preprocessor"
+name = "battery-v4.0-preprocessor"
 version = "3.7.0"
 description = "Deterministic AIHub battery preprocessor with CT >=25% pre-split exclusion"
 requires-python = ">=3.12,<3.13"
@@ -13,8 +13,8 @@ dependencies = [
 ]
 
 [project.scripts]
-"battery-v3.9" = "battery_v3_9.cli:main"
+"battery-v4.0" = "battery_v4_0.cli:main"
 
 [tool.setuptools]
-packages = ["battery_v3_9"]
+packages = ["battery_v4_0"]
 

@@ -4,7 +4,7 @@
 
   ## 버전 비종속
 
-  모듈 이름을 하드코딩하지 않고 스크립트 폴더에서 `battery_v3_*` 패키지를 찾아
+  모듈 이름을 하드코딩하지 않고 스크립트 폴더에서 `battery_v*` 패키지를 찾아
   쓴다. v3.6에서 v3.7로 올릴 때 `run_dryrun_keepawake.ps1`이 v3.3 시절 모듈을
   계속 부르다 실행 즉시 실패한 사고가 있었다. 폴더를 읽어 결정하면 그 종류의
   사고가 재발하지 않는다.
@@ -84,12 +84,12 @@ if ($PSVersionTable.PSVersion.Major -lt 7) {
 
 Set-Location -Path $PSScriptRoot
 
-$package = Get-ChildItem -Path $PSScriptRoot -Directory -Filter "battery_v3_*" |
+$package = Get-ChildItem -Path $PSScriptRoot -Directory -Filter "battery_v*" |
     Where-Object { Test-Path (Join-Path $_.FullName "cli.py") } |
     Sort-Object Name -Descending |
     Select-Object -First 1
 if (-not $package) {
-    Write-Error "battery_v3_* 패키지를 $PSScriptRoot 에서 찾지 못했다."
+    Write-Error "battery_v* 패키지를 $PSScriptRoot 에서 찾지 못했다."
     exit 2
 }
 $module = $package.Name
@@ -158,7 +158,7 @@ function Invoke-Upload {
     # 재업로드한다. 그래서 필요한 항목만 명시적으로 지정한다.
     "[upload] 1/2 부가 산출물 (reports/·소스·루트 파일)" | Tee-Object -FilePath $log -Append
     & rclone copy $Output $Remote `
-        --include "reports/**" --include "battery_v3_*/**" `
+        --include "reports/**" --include "battery_v*/**" `
         --include "README.md" --include "requirements.lock" --include "prepare_training_view.py" `
         --transfers 8 --retries 5 --stats 30s --stats-one-line `
         --log-level INFO --log-file $log

@@ -47,7 +47,7 @@ def porosity_area_bin(value: float) -> str:
 
 
 def is_ct_pre_split_excluded(sample: Sample) -> bool:
-    """Return whether v3.9 excludes a CT image before any ID split.
+    """Return whether v4.0 excludes a CT image before any ID split.
 
     The policy uses the largest component bbox computed from the same normalized
     8-decimal coordinates written to YOLO. The boundary is inclusive. RGB is

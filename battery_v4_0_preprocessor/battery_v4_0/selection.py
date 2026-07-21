@@ -20,7 +20,7 @@ from .parsing import choose_application
 EPSILON = 1e-12
 MAX_SWAP_ROUNDS = 12
 
-# v3.9 CT ID 게이트.
+# v4.0 CT ID 게이트.
 # Gate 1은 이미지 다수가 대형 공동인 ID를 통째로 제외한다. 이미지 단위 제외만
 # 적용하면 그런 ID는 원본의 11~22%만 남아 다른 ID와 같은 자격으로 fold에 들어갈 수
 # 없다. Gate 2는 annotation 밀도가 사분위 범위를 크게 벗어난 ID를 제외한다.
@@ -39,7 +39,7 @@ CT_FOLDS = 5
 # Test/development 밀도비가 2.78배가 됐다. 가중 합으로 바꾸어 모든 축이 실제로
 # 경쟁하게 했다(§26.12).
 #
-# v3.9는 area 가중치를 1에서 20으로 올렸다. 1~15에서는 면적 항이 밀도(가중치 6)에
+# v4.0는 area 가중치를 1에서 20으로 올렸다. 1~15에서는 면적 항이 밀도(가중치 6)에
 # 밀려 porosity 면적 구간이 Test에서 층화되지 않았고, 특히 1~5% 크기 기공이 Test에
 # 한 장도 들어가지 않았다(§26.13). 이 크기 구간이 밀도 상위 ID에 몰려 있어 밀도 균형과
 # 정면으로 충돌하기 때문이다. 20으로 올리면 저밀도이면서 이 구간을 가진 ID 120이 Test로
@@ -57,6 +57,116 @@ CT_TEST_WEIGHTS = {
 # 이 값이 낮으면 이미지 장수와 defect 비율에 밀려 밀도 편차가 게이트 경계까지
 # 올라간다. 초기값 4.0에서는 최악 fold가 +19.20%로 여유가 0.80%p뿐이었다.
 CT_FOLD_DENSITY_WEIGHT = 4.0
+
+# v4.0 CT Test ID 양성률 층화.
+# 기존 objective는 이미지 단위 지표(축·pooled 양성률·밀도·면적)만 맞추고 ID 단위
+# 양성률 분포는 강제하지 않아, 전체 이미지 양성률은 비슷해도 Test ID 구성이 특정
+# 구간에 쏠렸다(§26.14). 아래 구간별 quota를 하드 제약으로 두고, 기존 objective는
+# quota를 만족하는 조합 안에서만 최적화한다.
+CT_ID_POSITIVE_RATE_BINS = (
+    ("zero", 0.00, 0.00),
+    ("very_low", 0.00, 0.01),
+    ("low_mid", 0.01, 0.30),
+    ("mid_high", 0.30, 0.60),
+    ("very_high", 0.60, 1.00),
+)
+CT_ID_POSITIVE_RATE_BIN_ORDER = tuple(name for name, _lo, _hi in CT_ID_POSITIVE_RATE_BINS)
+
+
+def ct_id_positive_rate(stats: IdStats) -> float:
+    """ID의 양성률 = pre-split·ID gate 이후 이미지의 defect_image_ratio.
+
+    분모는 반드시 이 시점의 stats.samples 이미지 수여야 한다. 원시 매칭 수나 bbox
+    사전 제외 전 이미지 수를 쓰면 test/development 계산 시점이 어긋난다.
+    """
+    return sample_metrics(stats.samples).defect_image_ratio
+
+
+def ct_id_positive_rate_bin(value: float) -> str:
+    """양성률을 구간 이름으로 분류한다. 경계는 하한 포함, 상한 미포함이다.
+
+    정확히 0은 zero, 0.01은 low_mid, 0.30은 mid_high, 0.60은 very_high.
+    """
+    if not math.isfinite(value) or value < -EPSILON or value > 1.0 + EPSILON:
+        raise ValueError(f"CT ID positive rate out of range: {value}")
+    if abs(value) <= EPSILON:
+        return "zero"
+    if value < 0.01 - EPSILON:
+        return "very_low"
+    if value < 0.30 - EPSILON:
+        return "low_mid"
+    if value < 0.60 - EPSILON:
+        return "mid_high"
+    return "very_high"
+
+
+def ct_test_bin_counts(ids: Iterable[IdStats]) -> Counter:
+    """ID 집합의 양성률 구간별 개수."""
+    counts: Counter = Counter()
+    for stats in ids:
+        counts[ct_id_positive_rate_bin(ct_id_positive_rate(stats))] += 1
+    return counts
+
+
+def ct_test_bin_quotas(ct_ids: list[IdStats], test_count: int) -> dict[str, int]:
+    """largest-remainder로 구간별 test quota를 계산한다.
+
+    이상적 quota = 구간 후보 수 / 전체 후보 수 * test_count. 동률은 구간 순서
+    (zero -> very_low -> low_mid -> mid_high -> very_high)로 결정한다. quota는 구간
+    후보 수를 넘지 못하고, 합은 정확히 test_count여야 하며, 맞출 수 없으면 중단한다.
+    """
+    counts = ct_test_bin_counts(ct_ids)
+    order = CT_ID_POSITIVE_RATE_BIN_ORDER
+    populated = {name: counts.get(name, 0) for name in order}
+    total = sum(populated.values())
+    if total != len(ct_ids):
+        raise ValueError("CT ID positive-rate bin counts do not sum to candidate count")
+    quotas = largest_remainder(test_count, populated, populated)
+    # largest_remainder 는 가중치를 후보 수로 줬으므로 각 quota <= 후보 수가 보장되지만
+    # 방어적으로 재확인한다.
+    for name in order:
+        if quotas[name] > populated[name]:
+            raise ValueError(f"CT Test quota for {name} exceeds candidate count")
+    if sum(quotas.values()) != test_count:
+        raise ValueError("CT Test positive-rate quota does not sum to test count")
+    return {name: quotas[name] for name in order}
+
+
+def _ct_test_quota_feasible(
+    selected: list[IdStats],
+    remaining: list[IdStats],
+    quotas: dict[str, int],
+) -> bool:
+    """selected에 remaining을 더해 quota를 정확히 채울 수 있는지 판정한다.
+
+    각 구간에서 이미 고른 수가 quota를 넘지 않고, 남은 후보로 부족분을 채울 수
+    있어야 한다.
+    """
+    selected_counts = ct_test_bin_counts(selected)
+    remaining_counts = ct_test_bin_counts(remaining)
+    for name in CT_ID_POSITIVE_RATE_BIN_ORDER:
+        need = quotas[name]
+        have = selected_counts.get(name, 0)
+        if have > need:
+            return False
+        if have + remaining_counts.get(name, 0) < need:
+            return False
+    return True
+
+
+def _validate_ct_test_strata(
+    test: list[IdStats],
+    development: list[IdStats],
+    quotas: dict[str, int],
+) -> None:
+    """최종 test 구성이 quota와 정확히 일치하는지 하드 검증한다."""
+    actual = ct_test_bin_counts(test)
+    for name in CT_ID_POSITIVE_RATE_BIN_ORDER:
+        if actual.get(name, 0) != quotas[name]:
+            raise ValueError(
+                f"CT Test positive-rate quota violated at {name}: "
+                f"expected {quotas[name]}, got {actual.get(name, 0)}"
+            )
 
 
 def ct_split_structure(id_count: int) -> tuple[int, int]:
@@ -81,6 +191,7 @@ class SelectionResult:
     review_warnings: list[str] = field(default_factory=list)  # §17.3 검토 경고: 감사 기록용이며 자동 실행 차단 대상이 아님
     leakage_rows: list[dict[str, object]] = field(default_factory=list)
     ct_id_gate_rows: list[dict[str, object]] = field(default_factory=list)  # §8.5 ID 게이트로 제외된 CT ID
+    ct_test_positive_rate_quotas: dict[str, int] = field(default_factory=dict)  # §9.4 실측 후보 분포로 계산한 test quota
 
     @property
     def selected_samples(self) -> list[Sample]:
@@ -103,7 +214,7 @@ def _id_stats(samples: Iterable[Sample]) -> list[IdStats]:
 
 
 def apply_pre_split_policy(valid_samples: Iterable[Sample]) -> list[Sample]:
-    """Apply v3.9 policy exclusions before ID statistics and stratification.
+    """Apply v4.0 policy exclusions before ID statistics and stratification.
 
     Excluded samples stay on the scanned Sample objects for lineage/reporting,
     but are absent from the returned split population.  This function is
@@ -347,16 +458,32 @@ def _select_ct_test(ct_ids: list[IdStats], seed: int, locked: set[str] | None) -
     invalid_axes = sorted({sample.axis for stats in ct_ids for sample in stats.samples if sample.axis not in "xyz"})
     if invalid_axes:
         raise ValueError(f"CT samples contain invalid axes: {invalid_axes}")
+    # v4.0: ID 양성률 구간 quota를 하드 제약으로 둔다. 기존 objective(축·pooled
+    # 양성률·밀도·면적)는 quota를 만족하는 조합 안에서만 최적화한다.
+    quotas = ct_test_bin_quotas(ct_ids, test_count)
     if locked is not None:
         if len(locked) != test_count:
             raise ValueError(f"locked CT Test must contain exactly {test_count} IDs")
         test = [stats for stats in ct_ids if stats.battery_id in locked]
         if len(test) != test_count:
             raise ValueError("locked CT Test contains missing IDs")
+        development = [stats for stats in ct_ids if stats not in test]
+        # locked test도 개수뿐 아니라 구간별 count가 quota와 정확히 같아야 한다.
+        _validate_ct_test_strata(test, development, quotas)
     else:
         test = []
         while len(test) < test_count:
-            candidates = [stats for stats in ct_ids if stats not in test]
+            # 다음 ID를 더한 뒤에도 최종 quota를 채울 수 있는 후보만 허용한다.
+            candidates = []
+            for stats in ct_ids:
+                if stats in test:
+                    continue
+                proposed = test + [stats]
+                remaining = [item for item in ct_ids if item not in proposed]
+                if _ct_test_quota_feasible(proposed, remaining, quotas):
+                    candidates.append(stats)
+            if not candidates:
+                raise ValueError("CT Test positive-rate quota cannot be satisfied")
             candidates.sort(
                 key=lambda stats: (
                     _ct_test_objective(
@@ -374,6 +501,10 @@ def _select_ct_test(ct_ids: list[IdStats], seed: int, locked: set[str] | None) -
             best: tuple[float, bytes, str, str, IdStats, IdStats] | None = None
             for test_id in sorted(test, key=lambda stats: natural_id_key(stats.battery_id)):
                 for development_id in sorted(development, key=lambda stats: natural_id_key(stats.battery_id)):
+                    # quota를 유지하는 교환만 평가한다. 같은 구간끼리의 교환만
+                    # bin count를 보존한다.
+                    if ct_id_positive_rate_bin(ct_id_positive_rate(test_id)) != ct_id_positive_rate_bin(ct_id_positive_rate(development_id)):
+                        continue
                     proposed_test = [stats for stats in test if stats is not test_id] + [development_id]
                     proposed_development = [stats for stats in development if stats is not development_id] + [test_id]
                     objective = _ct_test_objective(proposed_test, proposed_development)
@@ -397,6 +528,7 @@ def _select_ct_test(ct_ids: list[IdStats], seed: int, locked: set[str] | None) -
     development = [stats for stats in ct_ids if stats not in test]
     if len(development) != development_count:
         raise ValueError("locked/selected CT Test leaves an invalid development set")
+    _validate_ct_test_strata(test, development, quotas)
     return sorted(test, key=lambda stats: natural_id_key(stats.battery_id)), sorted(development, key=lambda stats: natural_id_key(stats.battery_id))
 
 
@@ -645,7 +777,7 @@ def build_ct_folds(development: list[IdStats], seed: int) -> tuple[dict[str, lis
 
     The stratum constraint is not applied to CT. A dense ID in a sparsely
     populated stratum has no eligible partner, so the swap cannot reduce the
-    deviation at all; measured on the v3.9 population the worst fold moved from
+    deviation at all; measured on the v4.0 population the worst fold moved from
     +26.93% (gate failure) to +13.39% once the constraint was lifted. Defect
     balance stays protected by the ratio_spread guard inside the swap, which
     moved only from 0.0406 to 0.0426 in the same measurement.
@@ -684,6 +816,8 @@ def assign_dataset(
             if not sample.pre_split_exclusion_reason:
                 sample.pre_split_exclusion_reason = CT_ID_GATE_EXCLUSION_REASON
     selected_rgb = select_rgb_160(rgb_ids, seed)
+    _, ct_test_count = ct_split_structure(len(ct_ids))
+    ct_test_quotas = ct_test_bin_quotas(ct_ids, ct_test_count)
     ct_test, development = _select_ct_test(ct_ids, seed, locked_tests.get("CT"))
     _select_ct_development_samples(development)
     for stats in ct_test:
@@ -732,4 +866,10 @@ def assign_dataset(
             sample.split_role = stats.split_role
             sample.fold_id = stats.fold_id
     selected_ids = sorted(development + ct_test + selected_rgb, key=lambda stats: (stats.modality, natural_id_key(stats.battery_id)))
-    return SelectionResult(selected_ids, warnings, review_warnings, ct_id_gate_rows=ct_id_gate_rows)
+    return SelectionResult(
+        selected_ids,
+        warnings,
+        review_warnings,
+        ct_id_gate_rows=ct_id_gate_rows,
+        ct_test_positive_rate_quotas=ct_test_quotas,
+    )

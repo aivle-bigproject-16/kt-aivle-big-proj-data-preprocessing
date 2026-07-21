@@ -9,7 +9,7 @@ dry-run 한 번이 약 37분이므로, 선정 로직을 조금 바꿀 때마다 
 일치하는지 확인한다. 코드를 고치기 전에 먼저 이 검사를 통과시켜야 한다. 통과해야만
 이 도구가 파이프라인을 대변한다고 말할 수 있고, 그 뒤의 측정값을 신뢰할 수 있다.
 
-v3.9 개발 중 이 절차가 없어 사고가 두 번 났다. 한 번은 별도 최적화기의 결과를
+v4.0 개발 중 이 절차가 없어 사고가 두 번 났다. 한 번은 별도 최적화기의 결과를
 구현 결과로 착각해 계획서에 잘못된 수치를 적었고(§26.10), 한 번은 검증 코드가
 `_swap_density` 를 직접 호출해 파이프라인 호출부의 설정을 타지 않았다(§26.12).
 
@@ -27,9 +27,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from battery_v3_9 import selection as sel
-from battery_v3_9.metrics import sample_metrics, selected_samples as collect
-from battery_v3_9.models import Sample
+from battery_v4_0 import selection as sel
+from battery_v4_0.metrics import sample_metrics, selected_samples as collect
+from battery_v4_0.models import Sample
 
 csv.field_size_limit(10_000_000)
 

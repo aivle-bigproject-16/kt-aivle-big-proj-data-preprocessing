@@ -60,6 +60,27 @@ def _pre_split_policy() -> dict[str, object]:
     }
 
 
+def _positive_rate_policy(report_dir: Path) -> dict[str, object]:
+    """approval에 기록할 양성률 층화 정책. quota는 실측 후보 분포에서 계산한 값을 쓴다."""
+    quota: dict[str, int] = {}
+    for row in read_csv(report_dir / "ct_id_positive_rate_stratification.csv"):
+        if row.get("scope") == "overall":
+            quota[row["positive_rate_bin"]] = int(row["target_test_id_count"])
+    return {
+        "metric": "defect_image_ratio",
+        "denominator": "post_pre_split_policy_and_post_ct_id_gate_images",
+        "bins": {
+            "zero": "==0",
+            "very_low": "(0,0.01)",
+            "low_mid": "[0.01,0.30)",
+            "mid_high": "[0.30,0.60)",
+            "very_high": "[0.60,1.00]",
+        },
+        "quota_method": "largest_remainder",
+        "test_quota": quota,
+    }
+
+
 def _validate_quality_exceptions(warnings: list[str], rows: list[dict[str, str]]) -> None:
     expected = {row["warning_id"]: row for row in quality_exception_rows(warnings)}
     actual = {row.get("warning_id", ""): row for row in rows}
@@ -84,6 +105,7 @@ def approve_selection(work_dir: Path, approved_by: str, seed: int = 42) -> None:
         report_dir / "dryrun_warnings.csv",
         report_dir / "review_warnings.csv",
         report_dir / "quality_exceptions.csv",
+        report_dir / "ct_id_positive_rate_stratification.csv",
         report_dir / "raw_fingerprint.sha256",
     ]
     missing = [str(path) for path in required if not path.exists()]
@@ -106,12 +128,14 @@ def approve_selection(work_dir: Path, approved_by: str, seed: int = 42) -> None:
         "seed": seed,
         "raw_fingerprint": (report_dir / "raw_fingerprint.sha256").read_text(encoding="ascii").strip(),
         "pre_split_policy": _pre_split_policy(),
+        "ct_id_positive_rate_stratification": _positive_rate_policy(report_dir),
         "id_statistics_fingerprint": _sha256(report_dir / "selected_battery_ids_candidate.csv"),
         "artifact_sha256": {
             "selected_battery_ids.csv": _sha256(destinations[0]),
             "test_battery_ids.csv": _sha256(destinations[1]),
             "review_warnings.csv": _sha256(report_dir / "review_warnings.csv"),
             "quality_exceptions.csv": _sha256(report_dir / "quality_exceptions.csv"),
+            "ct_id_positive_rate_stratification.csv": _sha256(report_dir / "ct_id_positive_rate_stratification.csv"),
         },
     }
     destinations[2].write_text(json.dumps(approval, ensure_ascii=False, indent=2) + "\n", encoding="utf-8", newline="\n")
@@ -150,12 +174,15 @@ def execute(
     expected_policy = _pre_split_policy()
     if approval.get("pre_split_policy") != expected_policy:
         raise RuntimeError("pre-split policy differs from approval or is missing")
+    if approval.get("ct_id_positive_rate_stratification") != _positive_rate_policy(report_dir):
+        raise RuntimeError("CT ID positive-rate stratification policy differs from approval or is missing")
     artifact_hashes = approval.get("artifact_sha256")
     required_artifacts = {
         "selected_battery_ids.csv",
         "test_battery_ids.csv",
         "review_warnings.csv",
         "quality_exceptions.csv",
+        "ct_id_positive_rate_stratification.csv",
     }
     if not isinstance(artifact_hashes, dict) or set(artifact_hashes) != required_artifacts:
         raise RuntimeError("approval artifact hashes are missing or incomplete")

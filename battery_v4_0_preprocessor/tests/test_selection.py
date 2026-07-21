@@ -2,9 +2,9 @@ import unittest
 from collections import Counter
 from unittest import mock
 
-from battery_v3_9 import selection as sel
-from battery_v3_9.models import IdStats, Sample
-from battery_v3_9.selection import assign_dataset
+from battery_v4_0 import selection as sel
+from battery_v4_0.models import IdStats, Sample
+from battery_v4_0.selection import assign_dataset
 
 
 def sample(sample_id: str, modality: str, battery_id: str, axis: str, defect: bool) -> Sample:
@@ -144,7 +144,7 @@ class SelectionTests(unittest.TestCase):
         self.assertNotIn(excluded, result.selected_samples)
 
     def test_ct_id_losing_every_image_is_dropped_and_structure_adapts(self):
-        """v3.9 sizes the split from the surviving IDs instead of demanding 47.
+        """v4.0 sizes the split from the surviving IDs instead of demanding 47.
 
         An ID whose images are all excluded by the image rule is removed by the
         contamination gate, and the remaining 46 IDs form five folds of seven
@@ -203,7 +203,7 @@ class SelectionTests(unittest.TestCase):
 
 
 class CtBalanceWiringTests(unittest.TestCase):
-    """Guard the CT balance behaviour that a v3.9 dry-run had to uncover twice.
+    """Guard the CT balance behaviour that a v4.0 dry-run had to uncover twice.
 
     Every assertion here failed silently before: the suite passed while the
     pipeline produced a fold deviation at the gate boundary and a Test split
@@ -245,14 +245,14 @@ class CtBalanceWiringTests(unittest.TestCase):
 
     @staticmethod
     def _worst(groups, target):
-        from battery_v3_9.metrics import sample_metrics, selected_samples as collect
+        from battery_v4_0.metrics import sample_metrics, selected_samples as collect
         return max(
             abs(sample_metrics(collect(members, name, None)).annotations_per_image / target - 1)
             for name, members in groups.items()
         )
 
     def test_lifting_the_stratum_constraint_lets_the_swap_reduce_density_spread(self):
-        from battery_v3_9.metrics import sample_metrics, selected_samples as collect
+        from battery_v4_0.metrics import sample_metrics, selected_samples as collect
 
         stratum = lambda stats: round(sel._id_selected_ratio(stats) * 10)
         constrained = self._groups()
@@ -290,6 +290,97 @@ class CtBalanceWiringTests(unittest.TestCase):
             sel._ct_test_objective(balanced, development),
             sel._ct_test_objective(dense, development),
         )
+
+
+class CtPositiveRateQuotaTests(unittest.TestCase):
+    """v4.0 ID 양성률 quota 하드 제약."""
+
+    @staticmethod
+    def _stats(battery_id, defect_ratio, images=1000):
+        """양성률(defect_image_ratio)이 defect_ratio인 CT IdStats.
+
+        very_low 구간(0<x<0.01)을 표현하려면 이미지가 충분해야 한다. 1000장이면
+        0.003 같은 값이 3개 결함으로 정확히 재현된다.
+        """
+        defect_count = round(images * defect_ratio)
+        samples = []
+        for index in range(images):
+            defect = index < defect_count
+            samples.append(Sample(
+                sample_id=f"CT_{battery_id}_x_{index}", modality="CT", battery_id=battery_id,
+                axis="xyz"[index % 3], application="가전",
+                det_lines=["x"] if defect else [], included_det=True, included_seg=True,
+                pixel_hash=f"{battery_id}_{index}",
+            ))
+        stats = IdStats("CT", battery_id, "가전", samples)
+        stats.selected_samples = list(samples)
+        return stats
+
+    def _population(self, spec):
+        """spec = {bin_이름: 개수}. 각 구간 대표 양성률로 ID를 만든다."""
+        rate = {"zero": 0.0, "very_low": 0.003, "low_mid": 0.15, "mid_high": 0.45, "very_high": 0.80}
+        ids = []
+        n = 0
+        for bin_name, count in spec.items():
+            for _ in range(count):
+                ids.append(self._stats(str(100 + n), rate[bin_name]))
+                n += 1
+        return ids
+
+    def test_ct_positive_rate_bin_boundaries(self):
+        cases = {
+            0.0: "zero", sel.EPSILON / 2: "zero", 0.009999: "very_low", 0.01: "low_mid",
+            0.299999: "low_mid", 0.30: "mid_high", 0.599999: "mid_high", 0.60: "very_high", 1.0: "very_high",
+        }
+        for value, expected in cases.items():
+            self.assertEqual(sel.ct_id_positive_rate_bin(value), expected, value)
+        for bad in (float("nan"), float("inf"), -0.1, 1.5):
+            with self.assertRaises(ValueError):
+                sel.ct_id_positive_rate_bin(bad)
+
+    def test_ct_test_quota_is_largest_remainder(self):
+        ids = self._population({"zero": 10, "very_low": 12, "low_mid": 4, "mid_high": 7, "very_high": 4})
+        quotas = sel.ct_test_bin_quotas(ids, 7)
+        self.assertEqual(quotas, {"zero": 2, "very_low": 2, "low_mid": 1, "mid_high": 1, "very_high": 1})
+
+    def test_ct_test_selection_enforces_positive_rate_bins(self):
+        # 37 ID -> ct_split_structure: test 7, development 30 (실데이터와 동일 형태)
+        ids = self._population({"zero": 10, "very_low": 12, "low_mid": 4, "mid_high": 6, "very_high": 5})
+        _per_fold, test_count = sel.ct_split_structure(len(ids))
+        quotas = sel.ct_test_bin_quotas(ids, test_count)
+        test, development = sel._select_ct_test(ids, seed=42, locked=None)
+        self.assertEqual(len(test), test_count)
+        self.assertEqual(len(development), len(ids) - test_count)
+        self.assertEqual(dict(sel.ct_test_bin_counts(test)), quotas)
+
+    def test_ct_test_swap_never_breaks_positive_rate_quota(self):
+        ids = self._population({"zero": 10, "very_low": 12, "low_mid": 4, "mid_high": 6, "very_high": 5})
+        _per_fold, test_count = sel.ct_split_structure(len(ids))
+        quotas = sel.ct_test_bin_quotas(ids, test_count)
+        test, _dev = sel._select_ct_test(ids, seed=7, locked=None)
+        self.assertEqual(dict(sel.ct_test_bin_counts(test)), quotas)
+
+    def test_locked_ct_test_rejects_wrong_positive_rate_quota(self):
+        ids = self._population({"zero": 10, "very_low": 12, "low_mid": 4, "mid_high": 6, "very_high": 5})
+        _per_fold, test_count = sel.ct_split_structure(len(ids))
+        # 개수는 test_count 맞지만 전부 zero -> quota(2/2/1/1/1) 위반
+        zeros = [stats.battery_id for stats in ids if sel.ct_id_positive_rate_bin(sel.ct_id_positive_rate(stats)) == "zero"]
+        wrong = set(zeros[:test_count])
+        with self.assertRaises(ValueError):
+            sel._select_ct_test(ids, seed=42, locked=wrong)
+
+    def test_ct_quota_is_deterministic(self):
+        ids = self._population({"zero": 10, "very_low": 12, "low_mid": 4, "mid_high": 6, "very_high": 5})
+        first = sorted(st.battery_id for st in sel._select_ct_test(ids, seed=42, locked=None)[0])
+        second = sorted(st.battery_id for st in sel._select_ct_test(ids, seed=42, locked=None)[0])
+        self.assertEqual(first, second)
+
+    def test_ct_quota_handles_empty_bin(self):
+        # very_high 후보 0개 -> quota 0, 합은 test_count
+        ids = self._population({"zero": 10, "very_low": 12, "low_mid": 8, "mid_high": 7, "very_high": 0})
+        quotas = sel.ct_test_bin_quotas(ids, 7)
+        self.assertEqual(quotas["very_high"], 0)
+        self.assertEqual(sum(quotas.values()), 7)
 
 
 if __name__ == "__main__":

@@ -23,7 +23,12 @@ from .metrics import (
 )
 from .models import IdStats, Sample
 from .scan import ScanResult
-from .selection import SelectionResult
+from .selection import (
+    CT_ID_POSITIVE_RATE_BIN_ORDER,
+    SelectionResult,
+    ct_id_positive_rate,
+    ct_id_positive_rate_bin,
+)
 
 MANIFEST_FIELDS = [
     "sample_id", "original_stem", "modality", "battery_id", "axis", "application",
@@ -43,8 +48,9 @@ MANIFEST_FIELDS = [
 CSV_SCHEMAS: dict[str, list[str]] = {
     "id_scan_report.csv": ["modality", "battery_id", "application", "scanned_pairs", "valid_images", "pre_split_eligible_images", "pre_split_excluded_images", "x_valid", "y_valid", "z_valid", "ct_axis_set_valid", "defect_image_ratio", "annotations_per_image"],
     "split_axis_balance.csv": ["split", "x_images", "y_images", "z_images", "total_images", "x_ratio", "y_ratio", "z_ratio", "x_gap", "y_gap", "z_gap", "axis_max_gap", "axis_sum_gap"],
-    "selected_battery_ids_candidate.csv": ["modality", "battery_id", "split_role", "fold_id", "application", "n_valid_images", "n_selected_images", "x_count", "y_count", "z_count", "defect_image_ratio", "annotations_per_image", "has_damaged", "has_pollution"],
-    "selected_battery_ids.csv": ["modality", "battery_id", "split_role", "fold_id", "application", "n_valid_images", "n_selected_images", "x_count", "y_count", "z_count", "defect_image_ratio", "annotations_per_image", "has_damaged", "has_pollution"],
+    "selected_battery_ids_candidate.csv": ["modality", "battery_id", "split_role", "fold_id", "application", "n_valid_images", "n_selected_images", "x_count", "y_count", "z_count", "defect_image_ratio", "annotations_per_image", "has_damaged", "has_pollution", "ct_id_positive_rate_bin"],
+    "selected_battery_ids.csv": ["modality", "battery_id", "split_role", "fold_id", "application", "n_valid_images", "n_selected_images", "x_count", "y_count", "z_count", "defect_image_ratio", "annotations_per_image", "has_damaged", "has_pollution", "ct_id_positive_rate_bin"],
+    "ct_id_positive_rate_stratification.csv": ["scope", "positive_rate_bin", "candidate_id_count", "target_test_id_count", "actual_test_id_count", "development_id_count", "status"],
     "test_battery_ids_candidate.csv": ["modality", "battery_id"],
     "test_battery_ids.csv": ["modality", "battery_id"],
     "matching_issues.csv": ["split", "stem", "image_path", "json_candidate_paths", "image_count", "json_count", "candidate_count", "reason"],
@@ -84,7 +90,7 @@ def quality_exception_rows(warnings: Iterable[str]) -> list[dict[str, str]]:
         elif "det/seg gate" in warning:
             code, threshold = "det_seg_distribution", "seg_exclusion<=0.07;ratio_diff<=0.03"
         else:
-            code, threshold = "quality_gate", "plan_v3.9"
+            code, threshold = "quality_gate", "plan_v4.0"
         canonical = json.dumps(
             {"warning_code": code, "observed_value": warning, "threshold": threshold},
             ensure_ascii=False,
@@ -123,6 +129,11 @@ def _report_row_key(filename: str, fields: list[str], row: dict[str, Any]) -> tu
         "test_battery_ids.csv",
     }:
         return (str(row.get("modality", "")), natural_id_key(str(row.get("battery_id", ""))), full_row)
+    if filename == "ct_id_positive_rate_stratification.csv":
+        scope = str(row.get("scope", ""))
+        scope_rank = 0 if scope == "overall" else (2 if scope == "CT_test" else 1)
+        bin_rank = list(CT_ID_POSITIVE_RATE_BIN_ORDER).index(str(row.get("positive_rate_bin", "")))
+        return (scope_rank, scope, bin_rank, full_row)
     if filename in {"json_anomalies.csv", "class_name_variants.csv", "polygon_issues.csv"}:
         issue = row.get("issue", row.get("raw_class", ""))
         return (str(row.get("sample_id", "")), str(issue), full_row)
@@ -168,6 +179,9 @@ def selected_id_rows(selection: SelectionResult) -> list[dict[str, Any]]:
             "annotations_per_image": fmt_float(annotations),
             "has_damaged": stats.has_damaged,
             "has_pollution": stats.has_pollution,
+            "ct_id_positive_rate_bin": (
+                ct_id_positive_rate_bin(ct_id_positive_rate(stats)) if stats.modality == "CT" else ""
+            ),
         })
     return rows
 
@@ -324,6 +338,67 @@ def _ct_split_balance_rows(selection: SelectionResult) -> list[dict[str, Any]]:
             "image_count": len(samples),
             "target_image_ratio": fmt_float(0.2) if is_fold else "",
             "actual_image_ratio": fmt_float(len(samples) / development_total) if is_fold and development_total else "",
+        })
+    return rows
+
+
+def _ct_positive_rate_stratification_rows(selection: SelectionResult) -> list[dict[str, Any]]:
+    """CT ID 양성률 구간별 후보/목표test/실제test/development 개수와 상태.
+
+    overall 행은 test 실제 count가 quota와 같으면 PASS, 아니면 FAIL(하드 게이트).
+    fold 행은 감사용이므로 INFO로만 기록한다.
+    """
+    ct_ids = [stats for stats in selection.ids if stats.modality == "CT"]
+    quotas = selection.ct_test_positive_rate_quotas
+
+    def bin_of(stats: IdStats) -> str:
+        return ct_id_positive_rate_bin(ct_id_positive_rate(stats))
+
+    candidate = Counter(bin_of(stats) for stats in ct_ids)
+    test_ids = [stats for stats in ct_ids if stats.split_role == "test"]
+    development_ids = [stats for stats in ct_ids if stats.split_role == "development"]
+    test_counts = Counter(bin_of(stats) for stats in test_ids)
+    development_counts = Counter(bin_of(stats) for stats in development_ids)
+
+    rows: list[dict[str, Any]] = []
+    for name in CT_ID_POSITIVE_RATE_BIN_ORDER:
+        target = quotas.get(name, 0)
+        actual = test_counts.get(name, 0)
+        rows.append({
+            "scope": "overall",
+            "positive_rate_bin": name,
+            "candidate_id_count": candidate.get(name, 0),
+            "target_test_id_count": target,
+            "actual_test_id_count": actual,
+            "development_id_count": development_counts.get(name, 0),
+            "status": "PASS" if actual == target else "FAIL",
+        })
+
+    fold_ids: dict[str, list[IdStats]] = defaultdict(list)
+    for stats in development_ids:
+        fold_ids[stats.fold_id].append(stats)
+    for fold_id in sorted(fold_ids):
+        fold_counts = Counter(bin_of(stats) for stats in fold_ids[fold_id])
+        for name in CT_ID_POSITIVE_RATE_BIN_ORDER:
+            rows.append({
+                "scope": f"CT_fold_{fold_id}",
+                "positive_rate_bin": name,
+                "candidate_id_count": candidate.get(name, 0),
+                "target_test_id_count": "",
+                "actual_test_id_count": "",
+                "development_id_count": fold_counts.get(name, 0),
+                "status": "INFO",
+            })
+
+    for name in CT_ID_POSITIVE_RATE_BIN_ORDER:
+        rows.append({
+            "scope": "CT_test",
+            "positive_rate_bin": name,
+            "candidate_id_count": candidate.get(name, 0),
+            "target_test_id_count": quotas.get(name, 0),
+            "actual_test_id_count": test_counts.get(name, 0),
+            "development_id_count": "",
+            "status": "INFO",
         })
     return rows
 
@@ -598,8 +673,38 @@ def _eda_markdown(scan: ScanResult, selection: SelectionResult, warnings: list[s
     ]
     issue_rows = [[f"json:{issue}", count] for issue, count in sorted(anomaly_counts.items())]
     issue_rows += [[f"polygon:{issue}", count] for issue, count in sorted(polygon_counts.items())]
+
+    # CT ID 양성률 층화: image-micro(전체 이미지 기준)와 ID-macro(ID별 평균)를 분리해 보인다.
+    ct_ids = [stats for stats in selection.ids if stats.modality == "CT"]
+    ct_test_ids = [stats for stats in ct_ids if stats.split_role == "test"]
+    ct_dev_ids = [stats for stats in ct_ids if stats.split_role == "development"]
+    pr_rows = []
+    quotas = selection.ct_test_positive_rate_quotas
+    for name in CT_ID_POSITIVE_RATE_BIN_ORDER:
+        cand = sum(1 for stats in ct_ids if ct_id_positive_rate_bin(ct_id_positive_rate(stats)) == name)
+        tgt = quotas.get(name, 0)
+        act = sum(1 for stats in ct_test_ids if ct_id_positive_rate_bin(ct_id_positive_rate(stats)) == name)
+        dev = sum(1 for stats in ct_dev_ids if ct_id_positive_rate_bin(ct_id_positive_rate(stats)) == name)
+        pr_rows.append([name, cand, tgt, act, dev])
+
+    def _macro(ids: list[IdStats]) -> tuple[float, float, float, float, float]:
+        if not ids:
+            return (0.0, 0.0, 0.0, 0.0, 0.0)
+        rates = sorted(ct_id_positive_rate(stats) for stats in ids)
+        mean = sum(rates) / len(rates)
+        zero_share = sum(1 for value in rates if value <= 1e-12) / len(rates)
+        return (mean, median(rates), rates[0], rates[-1], zero_share)
+
+    dev_macro = _macro(ct_dev_ids)
+    test_macro = _macro(ct_test_ids)
+    dev_micro = sample_metrics(collect_selected_samples(ct_dev_ids)).defect_image_ratio
+    test_micro = sample_metrics(collect_selected_samples(ct_test_ids)).defect_image_ratio
+    macro_rows = [
+        ["development", fmt_float(dev_micro), fmt_float(dev_macro[0]), fmt_float(dev_macro[1]), fmt_float(dev_macro[2]), fmt_float(dev_macro[3]), fmt_float(dev_macro[4])],
+        ["test", fmt_float(test_micro), fmt_float(test_macro[0]), fmt_float(test_macro[1]), fmt_float(test_macro[2]), fmt_float(test_macro[3]), fmt_float(test_macro[4])],
+    ]
     return (
-        "# v3.9 post-crop EDA (dry-run estimate)\n\n"
+        "# v4.0 post-crop EDA (dry-run estimate)\n\n"
         "`execute` 전에는 CT crop 결과를 쓰지 않으므로 픽셀 통계가 아닌 확정 ROI/YOLO 변환 결과를 집계한다.\n\n"
         "## Dataset summary\n\n"
         + _markdown_table(["dataset", "IDs", "det images", "seg images", "defect ratio", "ann/image", "normal ratio", "x/y/z"], summary_rows)
@@ -613,6 +718,12 @@ def _eda_markdown(scan: ScanResult, selection: SelectionResult, warnings: list[s
         + _markdown_table(["metric", "count"], processing_rows)
         + "\n\n## Issue counts\n\n"
         + (_markdown_table(["issue", "count"], issue_rows) if issue_rows else "No JSON or polygon issues.")
+        + "\n\n## CT ID positive-rate stratification\n\n"
+        + "구간 경계는 하한 포함·상한 미포함이다: zero=0, very_low=(0,0.01), low_mid=[0.01,0.30), "
+        + "mid_high=[0.30,0.60), very_high=[0.60,1.00]. 분모는 pre-split 및 CT ID gate 이후 이미지 수다.\n\n"
+        + _markdown_table(["positive_rate_bin", "candidate IDs", "target test IDs", "actual test IDs", "development IDs"], pr_rows)
+        + "\n\nimage-micro(전체 이미지 기준 양성률)와 ID-macro(ID별 양성률 평균)는 서로 다른 지표다.\n\n"
+        + _markdown_table(["scope", "image-micro positive", "ID-macro mean", "ID-macro median", "ID-macro min", "ID-macro max", "완전음성 ID 비율"], macro_rows)
         + f"\n\n## Quality gate warnings\n\n{len(warnings)} warning(s). See `dryrun_warnings.csv`.\n"
     )
 
@@ -673,6 +784,7 @@ def write_reports(scan: ScanResult, selection: SelectionResult, report_dir: Path
         "ct_split_balance_summary.csv": _ct_split_balance_rows(selection),
         "ct_large_area_review.csv": _ct_large_area_review_rows(scan),
         "ct_id_exclusions.csv": list(selection.ct_id_gate_rows),
+        "ct_id_positive_rate_stratification.csv": _ct_positive_rate_stratification_rows(selection),
         "ct_bbox_exclusions.csv": bbox_exclusion_rows,
         "manifest.csv": manifest_rows,
     }
@@ -687,7 +799,7 @@ def write_reports(scan: ScanResult, selection: SelectionResult, report_dir: Path
     raw_ids = {modality: len({battery_id for current_modality, battery_id in scan.raw_image_counts if current_modality == modality}) for modality in ("CT", "EXT")}
     valid_ids = {modality: len({sample.battery_id for sample in scan.valid_samples if sample.modality == modality}) for modality in ("CT", "EXT")}
     (report_dir / "scan_summary.md").write_text(
-        "# v3.9 dry-run scan summary\n\n"
+        "# v4.0 dry-run scan summary\n\n"
         f"- Raw fingerprint: `{scan.raw_fingerprint}`\n"
         f"- Scanned matched samples: CT {modality_counts['CT']:,}, EXT {modality_counts['EXT']:,}\n"
         f"- Valid detection samples: CT {valid_counts['CT']:,}, EXT {valid_counts['EXT']:,}\n"
