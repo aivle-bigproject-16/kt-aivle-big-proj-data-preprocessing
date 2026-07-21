@@ -169,9 +169,16 @@ function Invoke-Upload {
         if ($LASTEXITCODE -ne 0) { return $LASTEXITCODE }
         "[upload] 완료: $name" | Tee-Object -FilePath $log -Append
     }
-    "[upload] 부가 산출물 (zip 제외)" | Tee-Object -FilePath $log -Append
-    & rclone copy $Output $Remote --exclude "*.zip" --transfers 8 --retries 5 `
-        --stats 30s --stats-one-line --log-level INFO --log-file $log
+    # 부가 산출물만 올린다: reports/, 소스 스냅샷 battery_v3_*/, 그리고 루트의
+    # README/lock/스크립트. --exclude "*.zip" 는 zip 만 뺄 뿐 CT/ 와 EXT/ 원본
+    # 폴더로 재귀해 zip 안에 이미 든 40만 장(약 91GB)을 통째로 재업로드한다.
+    # 그래서 필요한 항목만 명시적으로 지정한다.
+    "[upload] 부가 산출물 (reports/·소스·루트 파일만)" | Tee-Object -FilePath $log -Append
+    & rclone copy $Output $Remote `
+        --include "reports/**" --include "battery_v3_*/**" `
+        --include "README.md" --include "requirements.lock" --include "prepare_training_view.py" `
+        --transfers 8 --retries 5 --stats 30s --stats-one-line `
+        --log-level INFO --log-file $log
     return $LASTEXITCODE
 }
 
