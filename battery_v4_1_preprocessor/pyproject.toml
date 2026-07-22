@@ -3,9 +3,9 @@ requires = ["setuptools>=75"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "battery-v4.0-preprocessor"
-version = "3.7.0"
-description = "Deterministic AIHub battery preprocessor with CT >=25% pre-split exclusion"
+name = "battery-v4.1-preprocessor"
+version = "4.1.0"
+description = "Deterministic AIHub battery preprocessor preserving all CT IDs after image filtering"
 requires-python = ">=3.12,<3.13"
 dependencies = [
   "Pillow==12.2.0",
@@ -13,8 +13,7 @@ dependencies = [
 ]
 
 [project.scripts]
-"battery-v4.0" = "battery_v4_0.cli:main"
+"battery-v4.1" = "battery_v4_1.cli:main"
 
 [tool.setuptools]
-packages = ["battery_v4_0"]
-
+packages = ["battery_v4_1"]

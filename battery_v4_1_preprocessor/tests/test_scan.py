@@ -5,7 +5,7 @@ from pathlib import Path
 
 from PIL import Image
 
-from battery_v4_0.scan import scan_dataset
+from battery_v4_1.scan import scan_dataset
 
 
 def write_pair(root: Path, stem: str, payload: dict, color: tuple[int, int, int]) -> None:
@@ -76,4 +76,3 @@ class ScanTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

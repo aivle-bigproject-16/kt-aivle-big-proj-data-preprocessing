@@ -49,6 +49,29 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _value_set_sha256(values: set[str]) -> str:
+    """Hash a logical set independently of CSV row order or formatting."""
+    payload = "\n".join(sorted(values)) + "\n"
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _id_preservation_approval(report_dir: Path, filename: str = "selected_battery_ids.csv") -> dict[str, object]:
+    rows = read_csv(report_dir / filename)
+    ct_rows = [row for row in rows if row.get("modality") == "CT"]
+    discovered_ids = {row["battery_id"] for row in ct_rows}
+    test_ids = {row["battery_id"] for row in ct_rows if row.get("split_role") == "Test"}
+    development_ids = discovered_ids - test_ids
+    empty_ids = {row["battery_id"] for row in ct_rows if int(row.get("n_selected_images") or "0") == 0}
+    return {
+        "policy_version": "ct-id-preservation-v4.1",
+        "discovered_ct_id_set_sha256": _value_set_sha256(discovered_ids),
+        "test_development_union_sha256": _value_set_sha256(test_ids | development_ids),
+        "zero_image_ct_id_set_sha256": _value_set_sha256(empty_ids),
+        "discovered_ct_id_count": len(discovered_ids),
+        "zero_image_ct_id_count": len(empty_ids),
+    }
+
+
 def _pre_split_policy() -> dict[str, object]:
     return {
         "modality": "CT",
@@ -68,7 +91,7 @@ def _positive_rate_policy(report_dir: Path) -> dict[str, object]:
             quota[row["positive_rate_bin"]] = int(row["target_test_id_count"])
     return {
         "metric": "defect_image_ratio",
-        "denominator": "post_pre_split_policy_and_post_ct_id_gate_images",
+        "denominator": "post_pre_split_image_policy_images_with_all_ct_ids_preserved",
         "bins": {
             "zero": "==0",
             "very_low": "(0,0.01)",
@@ -128,6 +151,7 @@ def approve_selection(work_dir: Path, approved_by: str, seed: int = 42) -> None:
         "seed": seed,
         "raw_fingerprint": (report_dir / "raw_fingerprint.sha256").read_text(encoding="ascii").strip(),
         "pre_split_policy": _pre_split_policy(),
+        "ct_id_preservation": _id_preservation_approval(report_dir),
         "ct_id_positive_rate_stratification": _positive_rate_policy(report_dir),
         "id_statistics_fingerprint": _sha256(report_dir / "selected_battery_ids_candidate.csv"),
         "artifact_sha256": {
@@ -174,6 +198,8 @@ def execute(
     expected_policy = _pre_split_policy()
     if approval.get("pre_split_policy") != expected_policy:
         raise RuntimeError("pre-split policy differs from approval or is missing")
+    if approval.get("ct_id_preservation") != _id_preservation_approval(report_dir):
+        raise RuntimeError("CT ID preservation evidence differs from approval or is missing")
     if approval.get("ct_id_positive_rate_stratification") != _positive_rate_policy(report_dir):
         raise RuntimeError("CT ID positive-rate stratification policy differs from approval or is missing")
     artifact_hashes = approval.get("artifact_sha256")
@@ -203,6 +229,11 @@ def execute(
         if current_mapping != approved_mapping:
             raise RuntimeError("recomputed split/fold mapping differs from approved selection")
         warnings = write_reports(scan, selection, staging / "reports")
+        recomputed_preservation = _id_preservation_approval(
+            staging / "reports", "selected_battery_ids_candidate.csv"
+        )
+        if recomputed_preservation != approval.get("ct_id_preservation"):
+            raise RuntimeError("recomputed CT ID preservation evidence differs from approval")
         if _sha256(staging / "reports" / "selected_battery_ids_candidate.csv") != approval.get("id_statistics_fingerprint"):
             raise RuntimeError("recomputed ID statistics differ from approval")
         if warnings:

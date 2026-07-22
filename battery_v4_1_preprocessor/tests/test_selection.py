@@ -2,9 +2,9 @@ import unittest
 from collections import Counter
 from unittest import mock
 
-from battery_v4_0 import selection as sel
-from battery_v4_0.models import IdStats, Sample
-from battery_v4_0.selection import assign_dataset
+from battery_v4_1 import selection as sel
+from battery_v4_1.models import IdStats, Sample
+from battery_v4_1.selection import assign_dataset
 
 
 def sample(sample_id: str, modality: str, battery_id: str, axis: str, defect: bool) -> Sample:
@@ -143,41 +143,37 @@ class SelectionTests(unittest.TestCase):
         self.assertNotIn(excluded, test_id.samples)
         self.assertNotIn(excluded, result.selected_samples)
 
-    def test_ct_id_losing_every_image_is_dropped_and_structure_adapts(self):
-        """v4.0 sizes the split from the surviving IDs instead of demanding 47.
-
-        An ID whose images are all excluded by the image rule is removed by the
-        contamination gate, and the remaining 46 IDs form five folds of seven
-        with the rest going to Test.
-        """
+    def test_ct_id_losing_every_image_is_preserved_in_fixed_structure(self):
+        """Image filtering may empty an ID, but must not remove its membership."""
         samples = list(self.samples)
         for item in samples:
             if item.modality == "CT" and item.battery_id == "47":
                 item.porosity_bbox_max_ratio = 0.25
         result = assign_dataset(samples, seed=42)
         ct_ids = {stats.battery_id for stats in result.ids if stats.modality == "CT"}
-        self.assertNotIn("47", ct_ids)
-        self.assertEqual(len(ct_ids), 46)
-        # An ID that loses every image is already absent from the split population,
-        # so the image rule removes it before the ID gate can see it.
+        self.assertIn("47", ct_ids)
+        self.assertEqual(len(ct_ids), 47)
+        empty_id = next(
+            stats for stats in result.ids
+            if stats.modality == "CT" and stats.battery_id == "47"
+        )
+        self.assertEqual(empty_id.samples, [])
+        self.assertEqual(empty_id.selected_samples, [])
+        self.assertIn(empty_id.split_role, {"test", "development"})
         folds = Counter(
             stats.fold_id for stats in result.ids
             if stats.modality == "CT" and stats.split_role == "development"
         )
-        self.assertEqual(sorted(folds.values()), [7, 7, 7, 7, 7])
+        self.assertEqual(sorted(folds.values()), [8, 8, 8, 8, 8])
         test_ids = [stats for stats in result.ids if stats.modality == "CT" and stats.split_role == "test"]
-        self.assertEqual(len(test_ids), 11)
+        self.assertEqual(len(test_ids), 7)
 
-    def test_ct_id_density_gate_ignores_a_degenerate_interquartile_range(self):
-        """With few defect-bearing IDs, Q3 equals Q1 and no outlier is defined.
-
-        Firing the fence there would drop every ID that carries an annotation,
-        so the gate has to stand down instead.
-        """
+    def test_ct_id_gate_is_disabled(self):
         result = assign_dataset(list(self.samples), seed=42)
+        self.assertEqual(result.ct_id_gate_rows, [])
         self.assertEqual(
-            [row for row in result.ct_id_gate_rows if row["gate"] == "density_outlier"],
-            [],
+            len([stats for stats in result.ids if stats.modality == "CT"]),
+            47,
         )
 
     def test_ct_test_minimizes_defect_ratio_gap_after_axis_balance(self):
@@ -203,7 +199,7 @@ class SelectionTests(unittest.TestCase):
 
 
 class CtBalanceWiringTests(unittest.TestCase):
-    """Guard the CT balance behaviour that a v4.0 dry-run had to uncover twice.
+    """Guard the CT balance behaviour that a v4.1 dry-run had to uncover twice.
 
     Every assertion here failed silently before: the suite passed while the
     pipeline produced a fold deviation at the gate boundary and a Test split
@@ -245,14 +241,14 @@ class CtBalanceWiringTests(unittest.TestCase):
 
     @staticmethod
     def _worst(groups, target):
-        from battery_v4_0.metrics import sample_metrics, selected_samples as collect
+        from battery_v4_1.metrics import sample_metrics, selected_samples as collect
         return max(
             abs(sample_metrics(collect(members, name, None)).annotations_per_image / target - 1)
             for name, members in groups.items()
         )
 
     def test_lifting_the_stratum_constraint_lets_the_swap_reduce_density_spread(self):
-        from battery_v4_0.metrics import sample_metrics, selected_samples as collect
+        from battery_v4_1.metrics import sample_metrics, selected_samples as collect
 
         stratum = lambda stats: round(sel._id_selected_ratio(stats) * 10)
         constrained = self._groups()
@@ -293,7 +289,7 @@ class CtBalanceWiringTests(unittest.TestCase):
 
 
 class CtPositiveRateQuotaTests(unittest.TestCase):
-    """v4.0 ID 양성률 quota 하드 제약."""
+    """v4.1 ID 양성률 quota 하드 제약."""
 
     @staticmethod
     def _stats(battery_id, defect_ratio, images=1000):
@@ -344,8 +340,7 @@ class CtPositiveRateQuotaTests(unittest.TestCase):
         self.assertEqual(quotas, {"zero": 2, "very_low": 2, "low_mid": 1, "mid_high": 1, "very_high": 1})
 
     def test_ct_test_selection_enforces_positive_rate_bins(self):
-        # 37 ID -> ct_split_structure: test 7, development 30 (실데이터와 동일 형태)
-        ids = self._population({"zero": 10, "very_low": 12, "low_mid": 4, "mid_high": 6, "very_high": 5})
+        ids = self._population({"zero": 10, "very_low": 12, "low_mid": 4, "mid_high": 16, "very_high": 5})
         _per_fold, test_count = sel.ct_split_structure(len(ids))
         quotas = sel.ct_test_bin_quotas(ids, test_count)
         test, development = sel._select_ct_test(ids, seed=42, locked=None)
@@ -354,14 +349,14 @@ class CtPositiveRateQuotaTests(unittest.TestCase):
         self.assertEqual(dict(sel.ct_test_bin_counts(test)), quotas)
 
     def test_ct_test_swap_never_breaks_positive_rate_quota(self):
-        ids = self._population({"zero": 10, "very_low": 12, "low_mid": 4, "mid_high": 6, "very_high": 5})
+        ids = self._population({"zero": 10, "very_low": 12, "low_mid": 4, "mid_high": 16, "very_high": 5})
         _per_fold, test_count = sel.ct_split_structure(len(ids))
         quotas = sel.ct_test_bin_quotas(ids, test_count)
         test, _dev = sel._select_ct_test(ids, seed=7, locked=None)
         self.assertEqual(dict(sel.ct_test_bin_counts(test)), quotas)
 
     def test_locked_ct_test_rejects_wrong_positive_rate_quota(self):
-        ids = self._population({"zero": 10, "very_low": 12, "low_mid": 4, "mid_high": 6, "very_high": 5})
+        ids = self._population({"zero": 10, "very_low": 12, "low_mid": 4, "mid_high": 16, "very_high": 5})
         _per_fold, test_count = sel.ct_split_structure(len(ids))
         # 개수는 test_count 맞지만 전부 zero -> quota(2/2/1/1/1) 위반
         zeros = [stats.battery_id for stats in ids if sel.ct_id_positive_rate_bin(sel.ct_id_positive_rate(stats)) == "zero"]
@@ -370,14 +365,14 @@ class CtPositiveRateQuotaTests(unittest.TestCase):
             sel._select_ct_test(ids, seed=42, locked=wrong)
 
     def test_ct_quota_is_deterministic(self):
-        ids = self._population({"zero": 10, "very_low": 12, "low_mid": 4, "mid_high": 6, "very_high": 5})
+        ids = self._population({"zero": 10, "very_low": 12, "low_mid": 4, "mid_high": 16, "very_high": 5})
         first = sorted(st.battery_id for st in sel._select_ct_test(ids, seed=42, locked=None)[0])
         second = sorted(st.battery_id for st in sel._select_ct_test(ids, seed=42, locked=None)[0])
         self.assertEqual(first, second)
 
     def test_ct_quota_handles_empty_bin(self):
         # very_high 후보 0개 -> quota 0, 합은 test_count
-        ids = self._population({"zero": 10, "very_low": 12, "low_mid": 8, "mid_high": 7, "very_high": 0})
+        ids = self._population({"zero": 10, "very_low": 12, "low_mid": 8, "mid_high": 17, "very_high": 0})
         quotas = sel.ct_test_bin_quotas(ids, 7)
         self.assertEqual(quotas["very_high"], 0)
         self.assertEqual(sum(quotas.values()), 7)

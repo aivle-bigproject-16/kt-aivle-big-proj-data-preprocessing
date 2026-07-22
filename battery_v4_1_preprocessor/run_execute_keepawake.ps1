@@ -1,4 +1,4 @@
-﻿<#
+<#
   run_execute_keepawake.ps1
   run_pipeline.ps1 로 위임하는 얇은 래퍼다. approve-selection 이 먼저 끝나 있어야 한다.
   상세 설명은 run_pipeline.ps1 참고.

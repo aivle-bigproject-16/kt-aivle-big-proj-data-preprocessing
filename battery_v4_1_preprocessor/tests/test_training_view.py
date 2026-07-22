@@ -4,7 +4,7 @@ from pathlib import Path
 
 from PIL import Image
 
-from battery_v4_0.training_view import build_training_view
+from battery_v4_1.training_view import build_training_view
 
 
 class TrainingViewTests(unittest.TestCase):
@@ -41,4 +41,3 @@ class TrainingViewTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

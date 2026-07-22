@@ -3,8 +3,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from battery_v4_0.pipeline import approve_selection, execute
-from battery_v4_0.reports import CSV_SCHEMAS, quality_exception_rows, write_csv
+from battery_v4_1.pipeline import approve_selection, execute
+from battery_v4_1.reports import CSV_SCHEMAS, quality_exception_rows, write_csv
 
 
 class PipelineTests(unittest.TestCase):
@@ -26,7 +26,7 @@ class PipelineTests(unittest.TestCase):
         write_csv(reports / "ct_id_positive_rate_stratification.csv", CSV_SCHEMAS["ct_id_positive_rate_stratification.csv"], strat)
         (reports / "raw_fingerprint.sha256").write_text("abc\n", encoding="ascii")
 
-    def test_approval_records_v37_pre_split_policy(self):
+    def test_approval_records_v41_pre_split_policy(self):
         with tempfile.TemporaryDirectory() as tmp:
             work_dir = Path(tmp)
             reports = work_dir / "reports"
@@ -51,6 +51,16 @@ class PipelineTests(unittest.TestCase):
                 {"selected_battery_ids.csv", "test_battery_ids.csv", "review_warnings.csv", "quality_exceptions.csv", "ct_id_positive_rate_stratification.csv"},
             )
             self.assertEqual(len(approval["id_statistics_fingerprint"]), 64)
+            preservation = approval["ct_id_preservation"]
+            self.assertEqual(preservation["policy_version"], "ct-id-preservation-v4.1")
+            self.assertEqual(preservation["discovered_ct_id_count"], 1)
+            self.assertEqual(preservation["zero_image_ct_id_count"], 1)
+            for field in (
+                "discovered_ct_id_set_sha256",
+                "test_development_union_sha256",
+                "zero_image_ct_id_set_sha256",
+            ):
+                self.assertEqual(len(preservation[field]), 64)
 
     def test_approved_quality_exception_allows_approval_with_audit_fields(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -20,18 +20,9 @@ from .parsing import choose_application
 EPSILON = 1e-12
 MAX_SWAP_ROUNDS = 12
 
-# v4.0 CT ID 게이트.
-# Gate 1은 이미지 다수가 대형 공동인 ID를 통째로 제외한다. 이미지 단위 제외만
-# 적용하면 그런 ID는 원본의 11~22%만 남아 다른 ID와 같은 자격으로 fold에 들어갈 수
-# 없다. Gate 2는 annotation 밀도가 사분위 범위를 크게 벗어난 ID를 제외한다.
-# 두 게이트 모두 ID 이름을 직접 지정하지 않고 분포에서 임계값을 얻는다.
-CT_ID_CONTAMINATION_BASIS = 0.25
-CT_ID_CONTAMINATION_CUT = 0.25
-CT_ID_DENSITY_IQR_MULTIPLIER = 3.0
-CT_ID_GATE_MAX_DROPS = 12
-CT_ID_GATE_EXCLUSION_REASON = "ct_id_gate_excluded"
 CT_TEST_TARGET = 7
 CT_FOLDS = 5
+CT_EXPECTED_IDS = 47
 
 # CT Test 선정 목적함수 가중치.
 # v3.8은 이 항목들을 사전식 튜플로 비교했다. 앞 항목이 실수값이라 동점이 거의 없어
@@ -39,14 +30,14 @@ CT_FOLDS = 5
 # Test/development 밀도비가 2.78배가 됐다. 가중 합으로 바꾸어 모든 축이 실제로
 # 경쟁하게 했다(§26.12).
 #
-# v4.0는 area 가중치를 1에서 20으로 올렸다. 1~15에서는 면적 항이 밀도(가중치 6)에
+# v4.1는 area 가중치를 1에서 20으로 올렸다. 1~15에서는 면적 항이 밀도(가중치 6)에
 # 밀려 porosity 면적 구간이 Test에서 층화되지 않았고, 특히 1~5% 크기 기공이 Test에
 # 한 장도 들어가지 않았다(§26.13). 이 크기 구간이 밀도 상위 ID에 몰려 있어 밀도 균형과
 # 정면으로 충돌하기 때문이다. 20으로 올리면 이 크기 구간을 가진 저밀도 ID가 Test 후보로
 # 경쟁력을 얻는다. 이 가중치를 정한 v3.9 스윕에서는 그 결과로 ID 120이 Test에 들어와
 # 면적 최대격차가 0.096에서 0.038로, fold 최악 편차가 +13.39%에서 +8.36%로 개선됐다.
-# 다만 v4.0에서는 아래 ID 양성률 quota가 Test ID 구성을 지배하므로 어느 ID가 이 자리를
-# 채우는지는 quota와 objective가 함께 정한다(특정 ID를 고정하지 않는다). 실제로 v4.0
+# 다만 v4.1에서는 아래 ID 양성률 quota가 Test ID 구성을 지배하므로 어느 ID가 이 자리를
+# 채우는지는 quota와 objective가 함께 정한다(특정 ID를 고정하지 않는다). 실제로 v4.1
 # 실행에서는 mid_high quota를 ID 101이 채우고 ID 120은 development로 가며, 1~5% 크기
 # 기공의 Test 커버리지는 very_high의 ID 141이 제공한다. 가중치 값 자체는 30 이상에서
 # 밀도/fold가 무너지므로 18~25 안정 구간의 중앙으로 택했다.
@@ -63,7 +54,7 @@ CT_TEST_WEIGHTS = {
 # 올라간다. 초기값 4.0에서는 최악 fold가 +19.20%로 여유가 0.80%p뿐이었다.
 CT_FOLD_DENSITY_WEIGHT = 4.0
 
-# v4.0 CT Test ID 양성률 층화.
+# v4.1 CT Test ID 양성률 층화.
 # 기존 objective는 이미지 단위 지표(축·pooled 양성률·밀도·면적)만 맞추고 ID 단위
 # 양성률 분포는 강제하지 않아, 전체 이미지 양성률은 비슷해도 Test ID 구성이 특정
 # 구간에 쏠렸다(§26.14). 아래 구간별 quota를 하드 제약으로 두고, 기존 objective는
@@ -79,7 +70,7 @@ CT_ID_POSITIVE_RATE_BIN_ORDER = tuple(name for name, _lo, _hi in CT_ID_POSITIVE_
 
 
 def ct_id_positive_rate(stats: IdStats) -> float:
-    """ID의 양성률 = pre-split·ID gate 이후 이미지의 defect_image_ratio.
+    """ID의 양성률 = 이미지 단위 pre-split 정책 이후 defect_image_ratio.
 
     분모는 반드시 이 시점의 stats.samples 이미지 수여야 한다. 원시 매칭 수나 bbox
     사전 제외 전 이미지 수를 쓰면 test/development 계산 시점이 어긋난다.
@@ -175,18 +166,10 @@ def _validate_ct_test_strata(
 
 
 def ct_split_structure(id_count: int) -> tuple[int, int]:
-    """Return (ids_per_fold, test_id_count) for the surviving CT ID count.
-
-    Development always fills five equal folds and Test takes the remainder, so
-    the shape follows the data instead of a fixed 47/40/7 assumption:
-    47 IDs -> 8 per fold + Test 7, 37 IDs -> 6 per fold + Test 7.
-    """
-    per_fold = (id_count - CT_TEST_TARGET) // CT_FOLDS
-    if per_fold < 4:
-        raise ValueError(
-            f"CT surviving ID count {id_count} is too small for {CT_FOLDS} folds with Test {CT_TEST_TARGET}"
-        )
-    return per_fold, id_count - per_fold * CT_FOLDS
+    """Return the fixed v4.1 47/40/7 structure without dropping CT IDs."""
+    if id_count != CT_EXPECTED_IDS:
+        raise ValueError(f"CT ID count must be exactly {CT_EXPECTED_IDS}, got {id_count}")
+    return 8, CT_TEST_TARGET
 
 
 @dataclass
@@ -195,7 +178,7 @@ class SelectionResult:
     warnings: list[str] = field(default_factory=list)  # §17.2 하드 게이트(밀도 ±20%, 필수 클래스, det/seg): approve/execute 하드 블록
     review_warnings: list[str] = field(default_factory=list)  # §17.3 검토 경고: 감사 기록용이며 자동 실행 차단 대상이 아님
     leakage_rows: list[dict[str, object]] = field(default_factory=list)
-    ct_id_gate_rows: list[dict[str, object]] = field(default_factory=list)  # §8.5 ID 게이트로 제외된 CT ID
+    ct_id_gate_rows: list[dict[str, object]] = field(default_factory=list)  # v4.0 호환용; v4.1에서는 항상 빈 목록
     ct_test_positive_rate_quotas: dict[str, int] = field(default_factory=dict)  # §9.4 실측 후보 분포로 계산한 test quota
 
     @property
@@ -218,8 +201,36 @@ def _id_stats(samples: Iterable[Sample]) -> list[IdStats]:
     return sorted(result, key=lambda stats: (stats.modality, natural_id_key(stats.battery_id)))
 
 
+def _id_stats_preserving_ct_ids(
+    valid_samples: Iterable[Sample],
+    split_population: Iterable[Sample],
+) -> list[IdStats]:
+    """Build post-policy stats while preserving every discovered CT ID.
+
+    An ID can lose all of its images to the image-level bbox policy.  It still
+    participates in the fixed 47/40/7 membership with empty sample statistics.
+    """
+    post_policy = {
+        (stats.modality, stats.battery_id): stats
+        for stats in _id_stats(split_population)
+    }
+    for discovered in _id_stats(valid_samples):
+        key = (discovered.modality, discovered.battery_id)
+        if discovered.modality == "CT" and key not in post_policy:
+            post_policy[key] = IdStats(
+                modality="CT",
+                battery_id=discovered.battery_id,
+                application=discovered.application,
+                samples=[],
+            )
+    return sorted(
+        post_policy.values(),
+        key=lambda stats: (stats.modality, natural_id_key(stats.battery_id)),
+    )
+
+
 def apply_pre_split_policy(valid_samples: Iterable[Sample]) -> list[Sample]:
-    """Apply v4.0 policy exclusions before ID statistics and stratification.
+    """Apply v4.1 policy exclusions before ID statistics and stratification.
 
     Excluded samples stay on the scanned Sample objects for lineage/reporting,
     but are absent from the returned split population.  This function is
@@ -244,102 +255,6 @@ def apply_pre_split_policy(valid_samples: Iterable[Sample]) -> list[Sample]:
             continue
         eligible.append(sample)
     return eligible
-
-
-def _ct_id_contamination(valid_samples: Iterable[Sample]) -> dict[str, float]:
-    """Share of each CT ID's images that the image-level rule removes.
-
-    Computed on the full valid population, before pre-split filtering, so the
-    denominator is the ID's original image count.
-    """
-    totals: dict[str, int] = defaultdict(int)
-    excluded: dict[str, int] = defaultdict(int)
-    for sample in valid_samples:
-        if sample.modality != "CT":
-            continue
-        totals[sample.battery_id] += 1
-        if sample.porosity_bbox_max_ratio >= CT_ID_CONTAMINATION_BASIS:
-            excluded[sample.battery_id] += 1
-    return {
-        battery_id: excluded[battery_id] / count
-        for battery_id, count in totals.items()
-        if count
-    }
-
-
-def _quartiles(values: list[float]) -> tuple[float, float]:
-    """Q1 and Q3 by linear interpolation, matching statistics.quantiles(n=4)."""
-    ordered = sorted(values)
-    if len(ordered) < 2:
-        return (ordered[0], ordered[0]) if ordered else (0.0, 0.0)
-
-    def at(fraction: float) -> float:
-        position = fraction * (len(ordered) + 1) - 1
-        low = max(0, min(len(ordered) - 1, int(math.floor(position))))
-        high = max(0, min(len(ordered) - 1, low + 1))
-        weight = position - low
-        return ordered[low] + (ordered[high] - ordered[low]) * weight
-
-    return at(0.25), at(0.75)
-
-
-def ct_id_gate(ct_ids: list[IdStats], contamination: dict[str, float]) -> tuple[list[IdStats], list[dict[str, object]]]:
-    """Drop CT IDs that cannot participate in a balanced five-fold split.
-
-    Gate 1 removes IDs whose images are predominantly large voids, measured as
-    the share of the ID's original images excluded by the image-level rule.
-    Gate 2 removes annotation-density outliers, using Tukey's far-out fence on
-    the IDs that survive Gate 1. Gate 2 runs exactly once; re-applying it to its
-    own output would keep promoting the next-densest ID and erode the dataset.
-    """
-    rows: list[dict[str, object]] = []
-    survivors: list[IdStats] = []
-    for stats in ct_ids:
-        share = contamination.get(stats.battery_id, 0.0)
-        if share >= CT_ID_CONTAMINATION_CUT:
-            rows.append({
-                "battery_id": stats.battery_id,
-                "gate": "contamination",
-                "observed": f"{share:.8f}",
-                "threshold": f"{CT_ID_CONTAMINATION_CUT:.8f}",
-                "reason": f"ct_id_contamination_ge_{CT_ID_CONTAMINATION_CUT}",
-            })
-        else:
-            survivors.append(stats)
-
-    densities = {
-        stats.battery_id: sample_metrics(stats.samples).annotations_per_image
-        for stats in survivors
-    }
-    q1, q3 = _quartiles(list(densities.values())) if densities else (0.0, 0.0)
-    # An interquartile range of zero makes the fence collapse onto Q3, which would
-    # flag every ID carrying any annotation at all. That happens whenever fewer
-    # than a quarter of the IDs have defects, so the outlier test is undefined
-    # there and the gate must not fire.
-    if densities and (q3 - q1) > EPSILON:
-        fence = q3 + CT_ID_DENSITY_IQR_MULTIPLIER * (q3 - q1)
-        kept: list[IdStats] = []
-        for stats in survivors:
-            value = densities[stats.battery_id]
-            if value > fence + EPSILON:
-                rows.append({
-                    "battery_id": stats.battery_id,
-                    "gate": "density_outlier",
-                    "observed": f"{value:.8f}",
-                    "threshold": f"{fence:.8f}",
-                    "reason": f"ct_id_annotations_per_image_over_q3_plus_{CT_ID_DENSITY_IQR_MULTIPLIER}_iqr",
-                })
-            else:
-                kept.append(stats)
-        survivors = kept
-
-    if len(rows) > CT_ID_GATE_MAX_DROPS:
-        raise ValueError(
-            f"CT ID gates dropped {len(rows)} IDs (limit {CT_ID_GATE_MAX_DROPS}); "
-            "review the raw data before continuing"
-        )
-    rows.sort(key=lambda row: natural_id_key(str(row["battery_id"])))
-    return survivors, rows
 
 
 def _pooled_ratio(ids: Iterable[IdStats], samples: Callable[[IdStats], list[Sample]] | None = None) -> float:
@@ -463,7 +378,7 @@ def _select_ct_test(ct_ids: list[IdStats], seed: int, locked: set[str] | None) -
     invalid_axes = sorted({sample.axis for stats in ct_ids for sample in stats.samples if sample.axis not in "xyz"})
     if invalid_axes:
         raise ValueError(f"CT samples contain invalid axes: {invalid_axes}")
-    # v4.0: ID 양성률 구간 quota를 하드 제약으로 둔다. 기존 objective(축·pooled
+    # v4.1: ID 양성률 구간 quota를 하드 제약으로 둔다. 기존 objective(축·pooled
     # 양성률·밀도·면적)는 quota를 만족하는 조합 안에서만 최적화한다.
     quotas = ct_test_bin_quotas(ct_ids, test_count)
     if locked is not None:
@@ -547,8 +462,8 @@ def _ct_fold_assignment(development: list[IdStats], seed: int) -> dict[int, list
 
     Image count, axis, porosity-area bin and axis×area-bin balance are scored
     together. defect_image_ratio remains the primary marginal and
-    annotations_per_image is included here and still enforced by the existing
-    post-assignment ±20% gate. The fold size follows the surviving ID count.
+    annotations_per_image is included here and reported by the existing
+    post-assignment ±20% quality warning. The fold size is fixed at eight IDs.
     """
     if len(development) % CT_FOLDS:
         raise ValueError(f"CT development must divide into {CT_FOLDS} folds, got {len(development)} IDs")
@@ -782,7 +697,7 @@ def build_ct_folds(development: list[IdStats], seed: int) -> tuple[dict[str, lis
 
     The stratum constraint is not applied to CT. A dense ID in a sparsely
     populated stratum has no eligible partner, so the swap cannot reduce the
-    deviation at all; measured on the v4.0 population the worst fold moved from
+    deviation at all; measured on the v4.1 population the worst fold moved from
     +26.93% (gate failure) to +13.39% once the constraint was lifted. Defect
     balance stays protected by the ratio_spread guard inside the swap, which
     moved only from 0.0406 to 0.0426 in the same measurement.
@@ -805,21 +720,10 @@ def assign_dataset(
     locked_tests: dict[str, set[str]] | None = None,
 ) -> SelectionResult:
     locked_tests = locked_tests or {}
-    contamination = _ct_id_contamination(valid_samples)
     split_population = apply_pre_split_policy(valid_samples)
-    all_ids = _id_stats(split_population)
+    all_ids = _id_stats_preserving_ct_ids(valid_samples, split_population)
     ct_ids = [stats for stats in all_ids if stats.modality == "CT"]
     rgb_ids = [stats for stats in all_ids if stats.modality == "EXT"]
-    ct_ids, ct_id_gate_rows = ct_id_gate(ct_ids, contamination)
-    dropped_ct_ids = {str(row["battery_id"]) for row in ct_id_gate_rows}
-    for sample in valid_samples:
-        if sample.modality == "CT" and sample.battery_id in dropped_ct_ids:
-            sample.pre_split_eligible = False
-            sample.selected = False
-            sample.split_role = ""
-            sample.fold_id = ""
-            if not sample.pre_split_exclusion_reason:
-                sample.pre_split_exclusion_reason = CT_ID_GATE_EXCLUSION_REASON
     selected_rgb = select_rgb_160(rgb_ids, seed)
     _, ct_test_count = ct_split_structure(len(ct_ids))
     ct_test_quotas = ct_test_bin_quotas(ct_ids, ct_test_count)
@@ -875,6 +779,6 @@ def assign_dataset(
         selected_ids,
         warnings,
         review_warnings,
-        ct_id_gate_rows=ct_id_gate_rows,
+        ct_id_gate_rows=[],
         ct_test_positive_rate_quotas=ct_test_quotas,
     )

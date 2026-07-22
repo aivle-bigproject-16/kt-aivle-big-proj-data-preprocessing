@@ -3,10 +3,10 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from battery_v4_0.models import IdStats, Sample
-from battery_v4_0.reports import write_reports
-from battery_v4_0.scan import ScanResult
-from battery_v4_0.selection import SelectionResult
+from battery_v4_1.models import IdStats, Sample
+from battery_v4_1.reports import write_reports
+from battery_v4_1.scan import ScanResult
+from battery_v4_1.selection import SelectionResult
 
 
 class ReportTests(unittest.TestCase):
@@ -72,6 +72,12 @@ class ReportTests(unittest.TestCase):
                 "ct_porosity_bbox_max_ratio_ge_0.25",
             )
             self.assertEqual(manifest[removed.sample_id]["porosity_bbox_max_ratio"], "0.25000000")
+            with (report_dir / "ct_id_preservation_audit.csv").open("r", encoding="utf-8-sig", newline="") as stream:
+                preservation = list(csv.DictReader(stream))
+            self.assertEqual(len(preservation), 1)
+            self.assertEqual(preservation[0]["battery_id"], "1")
+            self.assertEqual(preservation[0]["id_preserved"], "True")
+            self.assertEqual(preservation[0]["pre_split_excluded_images"], "1")
 
     def test_report_rows_are_sorted_and_eda_has_each_ct_fold(self):
         samples = []

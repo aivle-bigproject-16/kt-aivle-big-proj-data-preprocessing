@@ -5,9 +5,9 @@ from pathlib import Path
 
 from PIL import Image
 
-from battery_v4_0.models import IdStats, Sample
-from battery_v4_0.output import write_dataset
-from battery_v4_0.selection import SelectionResult
+from battery_v4_1.models import IdStats, Sample
+from battery_v4_1.output import write_dataset
+from battery_v4_1.selection import SelectionResult
 
 
 class OutputTests(unittest.TestCase):
@@ -64,8 +64,8 @@ class OutputTests(unittest.TestCase):
             copied = output / "EXT/trainval/labels_json/Training/02.라벨링데이터/g/source.json"
             self.assertEqual(copied.read_bytes(), json_bytes)
             self.assertTrue((output / "EXT/trainval/labels_det/EXT__one__12345678.txt").exists())
-            self.assertTrue((output / "battery_v4_0/cli.py").exists())
-            self.assertTrue((output / "battery_EXT_v3_trainval.zip").exists())
+            self.assertTrue((output / "battery_v4_1/cli.py").exists())
+            self.assertTrue((output / "battery_EXT_v4_1_trainval.zip").exists())
 
     def test_rejects_invalid_class_id_during_reverse_validation(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -113,4 +113,3 @@ class OutputTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

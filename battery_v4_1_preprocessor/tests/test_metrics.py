@@ -1,12 +1,12 @@
 import unittest
 
-from battery_v4_0.metrics import (
+from battery_v4_1.metrics import (
     group_selected_samples,
     sample_metrics,
     selected_samples,
     split_fold_group_name,
 )
-from battery_v4_0.models import IdStats, Sample
+from battery_v4_1.models import IdStats, Sample
 
 
 class MetricTests(unittest.TestCase):
@@ -49,4 +49,3 @@ class MetricTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

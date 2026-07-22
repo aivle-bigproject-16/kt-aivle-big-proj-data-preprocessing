@@ -2,14 +2,14 @@
 
 dry-run 한 번이 약 37분이므로, 선정 로직을 조금 바꿀 때마다 전체를 다시 도는 것은
 현실적이지 않다. 이 도구는 완료된 dry-run의 `manifest.csv`에서 CT 샘플을 복원한
-뒤 파이프라인이 쓰는 함수(`_ct_id_contamination`, `ct_id_gate`, `_select_ct_test`,
+뒤 파이프라인이 쓰는 함수(`_id_stats_preserving_ct_ids`, `_select_ct_test`,
 `build_ct_folds`)를 그대로 호출해 결과를 즉시 보여준다. 약 90초면 끝난다.
 
 `--check` 를 주면 산출 결과가 그 work-dir의 `selected_battery_ids_candidate.csv`와
 일치하는지 확인한다. 코드를 고치기 전에 먼저 이 검사를 통과시켜야 한다. 통과해야만
 이 도구가 파이프라인을 대변한다고 말할 수 있고, 그 뒤의 측정값을 신뢰할 수 있다.
 
-v4.0 개발 중 이 절차가 없어 사고가 두 번 났다. 한 번은 별도 최적화기의 결과를
+v4.1 개발 중 이 절차가 없어 사고가 두 번 났다. 한 번은 별도 최적화기의 결과를
 구현 결과로 착각해 계획서에 잘못된 수치를 적었고(§26.10), 한 번은 검증 코드가
 `_swap_density` 를 직접 호출해 파이프라인 호출부의 설정을 타지 않았다(§26.12).
 
@@ -27,9 +27,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from battery_v4_0 import selection as sel
-from battery_v4_0.metrics import sample_metrics, selected_samples as collect
-from battery_v4_0.models import Sample
+from battery_v4_1 import selection as sel
+from battery_v4_1.metrics import sample_metrics, selected_samples as collect
+from battery_v4_1.models import Sample
 
 csv.field_size_limit(10_000_000)
 
@@ -69,10 +69,12 @@ def run_ct_selection(samples: list[Sample], seed: int = 42):
         sample.split_role = ""
         sample.fold_id = ""
         sample.selected = False
-    contamination = sel._ct_id_contamination(samples)
     population = sel.apply_pre_split_policy(samples)
-    ct_ids = [stats for stats in sel._id_stats(population) if stats.modality == "CT"]
-    ct_ids, gate_rows = sel.ct_id_gate(ct_ids, contamination)
+    ct_ids = [
+        stats
+        for stats in sel._id_stats_preserving_ct_ids(samples, population)
+        if stats.modality == "CT"
+    ]
     test, development = sel._select_ct_test(ct_ids, seed, None)
     sel._select_ct_development_samples(development)
     for stats in test:
@@ -80,7 +82,7 @@ def run_ct_selection(samples: list[Sample], seed: int = 42):
         stats.split_role = "test"
     # 파이프라인과 같은 헬퍼를 호출한다. 여기서 갈라지면 검증이 다른 것을 재게 된다.
     groups, target = sel.build_ct_folds(development, seed)
-    return gate_rows, test, groups, target
+    return [], test, groups, target
 
 
 def report(gate_rows, test, groups, target) -> float:
@@ -88,7 +90,7 @@ def report(gate_rows, test, groups, target) -> float:
     dev_metrics = sample_metrics(collect(development))
     test_metrics = sample_metrics(sample for stats in test for sample in stats.samples)
 
-    print(f"ID 게이트 제외 {len(gate_rows)}건: {[str(r['battery_id']) for r in gate_rows]}")
+    print(f"ID 게이트 제외 {len(gate_rows)}건 (v4.1에서는 항상 0건)")
     print(f"Test {len(test)}개: {sorted(stats.battery_id for stats in test)}")
     worst = defect_spread = image_share = 0.0
     for name in sorted(groups):

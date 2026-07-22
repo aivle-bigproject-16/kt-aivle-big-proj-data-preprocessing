@@ -154,22 +154,22 @@ def write_dataset(root: Path, selection: SelectionResult, jobs: int = 1) -> None
     _write_samples(root, selection, jobs)
     _write_membership(root, selection)
     _verify_output(root, selection)
-    _write_text(root / "README.md", "# Battery v4.0 dataset\n\nTest data is for final evaluation only. Do not use it for training or model selection.\n")
+    _write_text(root / "README.md", "# Battery v4.1 dataset\n\nTest data is for final evaluation only. Do not use it for training or model selection.\n")
     _write_text(root / "requirements.lock", "Pillow==12.2.0\nshapely==2.1.2\n")
     source_package = Path(__file__).resolve().parent
     shutil.copytree(
         source_package,
-        root / "battery_v4_0",
+        root / "battery_v4_1",
         ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
     )
     wrapper = (
         "from pathlib import Path\n"
-        "from battery_v4_0.training_view import build_training_view\n"
-        "from battery_v4_0.cli import training_view_main\n\n"
+        "from battery_v4_1.training_view import build_training_view\n"
+        "from battery_v4_1.cli import training_view_main\n\n"
         "if __name__ == '__main__':\n"
         "    training_view_main(Path(__file__).resolve().parent)\n"
     )
     _write_text(root / "prepare_training_view.py", wrapper)
     for modality, label in (("CT", "CT"), ("EXT", "EXT")):
-        _zip_tree(root, root / modality / "trainval", root / f"battery_{label}_v3_trainval.zip")
-        _zip_tree(root, root / modality / "test", root / f"battery_{label}_v3_test.zip")
+        _zip_tree(root, root / modality / "trainval", root / f"battery_{label}_v4_1_trainval.zip")
+        _zip_tree(root, root / modality / "test", root / f"battery_{label}_v4_1_test.zip")

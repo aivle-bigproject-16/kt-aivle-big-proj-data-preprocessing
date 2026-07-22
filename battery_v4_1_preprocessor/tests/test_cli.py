@@ -6,7 +6,7 @@ import unittest
 class CliTests(unittest.TestCase):
     def test_cli_help_exposes_safety_workflow(self):
         result = subprocess.run(
-            [sys.executable, "-m", "battery_v4_0.cli", "--help"],
+            [sys.executable, "-m", "battery_v4_1.cli", "--help"],
             capture_output=True,
             text=True,
             check=False,
@@ -19,4 +19,3 @@ class CliTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-
