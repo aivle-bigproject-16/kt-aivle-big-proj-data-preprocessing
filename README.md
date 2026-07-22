@@ -11,7 +11,7 @@
 
 ## v4.1 핵심 변경
 
-v4.1은 v4.0 파이프라인을 별도 폴더에 그대로 보존하고 새 패키지로 분리했습니다. 이미지 단위 `porosity_bbox_max_ratio >= 0.25` 제외는 유지하지만, 이미지 제외율 또는 annotation 밀도를 이유로 Battery ID를 통째로 제거하던 ID 게이트는 사용하지 않습니다. 확인된 CT 47 ID를 모두 Test 7 + development 40에 배정하며, 이미지 정책 적용 후 0장이 된 ID도 멤버십과 감사 보고서에 남깁니다.
+v4.1은 저장소의 현행 단일 전처리 파이프라인입니다. 이미지 단위 `porosity_bbox_max_ratio >= 0.25` 제외는 유지하지만, 이미지 제외율 또는 annotation 밀도를 이유로 Battery ID를 통째로 제거하던 ID 게이트는 사용하지 않습니다. 확인된 CT 47 ID를 모두 Test 7 + development 40에 배정하며, 이미지 정책 적용 후 0장이 된 ID도 멤버십과 감사 보고서에 남깁니다.
 
 CT polygon 복구·ROI clipping·multipart 분리 후 각 유효 조각의 정규화 좌표를 소수점 8자리로 직렬화합니다. 이 좌표에서 계산한 개별 bbox 면적비의 이미지별 최댓값을 `porosity_bbox_max_ratio`로 정의합니다.
 
@@ -54,7 +54,7 @@ battery_v4_1_preprocessor/
 데이터_전처리_v4.1_전체구현계획.md
 ```
 
-v4.0 코드는 `battery_v4_0_preprocessor/`에 변경 없이 유지합니다. v4.0 work-dir, 승인 파일, 선택 ID CSV는 v4.1에서 재사용할 수 없습니다.
+기존 v4.0 패키지와 계획서는 v4.1로 대체했습니다. 이전 버전의 work-dir, 승인 파일, 선택 ID CSV는 v4.1에서 재사용할 수 없습니다.
 
 ## 실행
 
