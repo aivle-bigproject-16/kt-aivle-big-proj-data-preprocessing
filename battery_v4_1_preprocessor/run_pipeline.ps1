@@ -1,4 +1,4 @@
-<#
+﻿<#
   run_pipeline.ps1
   전처리 파이프라인의 단일 실행 진입점이다. 버전이 올라가도 수정 없이 동작한다.
 
@@ -127,15 +127,6 @@ switch ($Stage) {
     }
 }
 
-# 산출물 zip은 CT trainval, CT test, EXT trainval, EXT test 순서로 하나씩 완성되며
-# 각 파일은 완전히 닫힌 뒤 다음이 시작된다. 따라서 완성된 것부터 올려도 된다.
-$ZIP_ORDER = @(
-    "battery_CT_v3_trainval.zip",
-    "battery_CT_v3_test.zip",
-    "battery_EXT_v3_trainval.zip",
-    "battery_EXT_v3_test.zip"
-)
-
 function Test-ZipClosed([string]$path) {
     # 중앙 디렉터리가 기록됐는지만 확인한다. testzip 은 전체를 압축 해제하므로
     # 수십 GB 파일에는 쓰지 않는다. 19.7GB 파일에서 이 방식은 2.5초면 끝난다.
@@ -151,7 +142,11 @@ function Invoke-Upload {
     # 순서: reports/·소스·루트 → CT zip → RGB(EXT) zip.
     # reports 는 게이트 근거와 감사 기록이라 가장 먼저 올려 팀이 선정 결과를 바로
     # 검토할 수 있게 한다(약 259MB). CT(약 18GB)가 EXT(약 71GB)보다 작으므로 CT 를
-    # 먼저 올려 작은 산출물부터 공유된다. ZIP_ORDER 는 이미 CT 가 EXT 앞이다.
+    # 먼저 올린다. 아래 zip 목록은 출력 폴더에서 실제 파일명을 찾아 정렬하므로
+    # (battery_CT_* < battery_EXT_*), zip 이름이 버전마다 달라도(v3_·v4_1_ 등) 동작한다.
+    # 종전에는 이름을 하드코딩(battery_CT_v3_*)해 두어, v4.1이 output.py 에서 zip 을
+    # battery_CT_v4_1_* 로 바꾸자 업로드 루프가 4개 모두 건너뛰고 zip 을 하나도 올리지
+    # 못했다.
     #
     # 부가 산출물에 --exclude "*.zip" 을 쓰지 않는 이유: 그 옵션은 zip 만 뺄 뿐
     # CT/ 와 EXT/ 원본 폴더로 재귀해 zip 안에 이미 든 40만 장(약 91GB)을 통째로
@@ -165,13 +160,12 @@ function Invoke-Upload {
     if ($LASTEXITCODE -ne 0) { return $LASTEXITCODE }
     "[upload] 부가 산출물 완료" | Tee-Object -FilePath $log -Append
 
-    "[upload] 2/2 데이터셋 zip (CT -> EXT)" | Tee-Object -FilePath $log -Append
-    foreach ($name in $ZIP_ORDER) {
-        $path = Join-Path $Output $name
-        if (-not (Test-Path $path)) {
-            "[upload] 없음, 건너뜀: $name" | Tee-Object -FilePath $log -Append
-            continue
-        }
+    $zips = Get-ChildItem $Output -Filter "*.zip" | Sort-Object Name
+    if (-not $zips) { "[upload] zip 없음 — 산출물 확인 필요" | Tee-Object -FilePath $log -Append; return 1 }
+    "[upload] 2/2 데이터셋 zip (CT -> EXT): $($zips.Count)개" | Tee-Object -FilePath $log -Append
+    foreach ($zip in $zips) {
+        $name = $zip.Name
+        $path = $zip.FullName
         $previous = -1L
         while ($true) {
             $size = (Get-Item $path).Length
